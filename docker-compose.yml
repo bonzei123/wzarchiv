@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  zeitung-downloader:
+    build: wormser_zeitung
+    container_name: zeitung-downloader
+    restart: always
+    ports:
+      - "6789:5000"
+    environment:
+      - RUNNING_IN_DOCKER=true
+      - TZ=Europe/Berlin
+    # HIER ÜBERSCHREIBEN WIR DEN BEFEHL VOM DOCKERFILE
+    command: gunicorn -w 4 -b 0.0.0.0:5000 --timeout 120 app:app
+    volumes:
+      - ./downloads:/app/downloads
+      - ./zeitung.py:/app/zeitung.py
+      - ./app.py:/app/app.py
+      - ./indexer.py:/app/indexer.py
+      - ./templates:/app/templates
+    env_file:
+      - .env

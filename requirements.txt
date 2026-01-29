@@ -1,0 +1,9 @@
+selenium
+undetected-chromedriver
+discord-webhook
+python-dotenv
+flask
+APScheduler
+Flask-BasicAuth
+gunicorn
+pypdf
