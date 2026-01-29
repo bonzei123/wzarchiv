@@ -38,7 +38,6 @@ SITE_CONFIG = {
         "password_field": (By.ID, 'password'),
         "login_submit_btn": (By.CSS_SELECTOR, "button[type='submit']"),
         "download_btn": (By.CLASS_NAME, 'pdf-download'),
-        # NEU: Logout Button (Selektor via Title Attribut ist sehr stabil)
         "logout_btn": (By.CSS_SELECTOR, "a[title='Abmelden']")
     },
     "credentials": {
@@ -77,7 +76,6 @@ class ZeitungScraper:
             options.add_argument('--disable-dev-shm-usage')
             target_version = self.get_docker_chrome_version()
         else:
-            # Lokal (ggf anpassen)
             # options.binary_location = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
             target_version = 131
 
@@ -90,7 +88,8 @@ class ZeitungScraper:
             'download.default_directory': str(base_dir.absolute()),
             'download.prompt_for_download': False,
             'download.directory_upgrade': True,
-            'safebrowsing.enabled': True
+            'safebrowsing.enabled': True,
+            'plugins.always_open_pdf_externally': True  # PDF Download erzwingen statt Viewer
         }
         options.add_experimental_option('prefs', prefs)
 
@@ -113,7 +112,6 @@ class ZeitungScraper:
             pass
 
         try:
-            # Check ob Logout Button da ist -> dann sind wir schon drin
             WebDriverWait(self.driver, 3).until(EC.presence_of_element_located(s["logout_btn"]))
             logger.info("Bereits eingeloggt.")
             return
@@ -136,46 +134,87 @@ class ZeitungScraper:
         self.wait.until(EC.url_contains("vrm-epaper.de"))
 
     def logout(self):
-        """Führt den Logout durch, um Sessions freizugeben"""
         try:
+            # WICHTIG: Zurück zum Dashboard, da ist der Logout Button sicher
+            logger.info("Navigiere zum Dashboard für Logout...")
+            self.driver.get(SITE_CONFIG["url"])
+            time.sleep(2)
+
             logger.info("Führe Logout durch...")
             s = SITE_CONFIG["selectors"]
-            # Wir warten kurz, falls noch Overlays da sind
-            time.sleep(1)
 
-            # Wir nutzen execute_script, da der Button oft in einem Dropdown versteckt ist.
-            # Ein normaler .click() würde fehlschlagen, wenn das Menü nicht offen ist.
-            # JS Click funktioniert auch auf versteckten Elementen.
-            logout_btn = self.driver.find_element(*s["logout_btn"])
+            logout_btn = self.wait.until(EC.presence_of_element_located(s["logout_btn"]))
             self.driver.execute_script("arguments[0].click();", logout_btn)
 
-            # Kurz warten bis Logout durch ist (Seite lädt neu)
             time.sleep(2)
             logger.info("Logout erfolgreich.")
         except Exception as e:
-            logger.warning(f"Logout nicht möglich (vielleicht schon ausgeloggt?): {e}")
+            logger.warning(f"Logout nicht möglich: {e}")
 
     def wait_for_download(self, filename_to_save):
         logger.info(f"Warte auf Download für: {filename_to_save}")
-        end_time = time.time() + 60
 
+        # Cleanup: Lösche alte .crdownload Leichen, damit wir uns nicht verwirren
+        for temp in base_dir.glob("*.crdownload"):
+            try:
+                os.remove(temp)
+            except:
+                pass
+
+        end_time = time.time() + 90  # Mehr Zeit geben (90s)
         target_file = base_dir / filename_to_save
 
+        # Warte, bis überhaupt eine neue Datei auftaucht
         while time.time() < end_time:
             files = list(base_dir.glob("*.pdf"))
             temp_files = list(base_dir.glob("*.crdownload"))
 
+            # Logik: Wir warten bis KEINE .crdownload mehr da ist, UND eine PDF da ist.
             if files and not temp_files:
+                # Wir nehmen die allerneueste Datei
                 latest_file = max(files, key=os.path.getctime)
+
+                # Sicherheitscheck: Ist die Datei jünger als 2 Minuten? (Nicht dass wir eine alte indexieren)
+                if time.time() - os.path.getctime(latest_file) > 120:
+                    time.sleep(1)
+                    continue
+
                 if latest_file.name != filename_to_save:
+                    # Falls Zieldatei schon existiert (Fehler beim letzten Mal?), löschen
                     if target_file.exists():
                         os.remove(target_file)
-                    shutil.move(str(latest_file), str(target_file))
-                    logger.info(f"Gespeichert als: {filename_to_save}")
-                return target_file
+
+                    # Umbenennen
+                    try:
+                        shutil.move(str(latest_file), str(target_file))
+                        logger.info(f"Gespeichert als: {filename_to_save}")
+                        return target_file
+                    except Exception as e:
+                        logger.error(f"Fehler beim Umbenennen: {e}")
+                        return None
+                else:
+                    return target_file  # Name stimmte schon
+
             time.sleep(1)
-        logger.warning(f"Timeout beim Download von {filename_to_save}")
+
+        logger.warning(f"Timeout! Datei nicht erhalten: {filename_to_save}")
         return None
+
+    def handle_tabs(self):
+        """Schließt neu geöffnete Tabs und kehrt zum Hauptfenster zurück"""
+        try:
+            if len(self.driver.window_handles) > 1:
+                logger.info("Neuer Tab erkannt. Schließe ihn...")
+                main_window = self.driver.window_handles[0]
+                new_window = self.driver.window_handles[1]
+
+                self.driver.switch_to.window(new_window)
+                time.sleep(1)  # Kurz warten, falls Download Trigger hier liegt
+                self.driver.close()
+
+                self.driver.switch_to.window(main_window)
+        except Exception as e:
+            logger.warning(f"Tab Handling Fehler: {e}")
 
     def run_daily(self):
         try:
@@ -187,6 +226,10 @@ class ZeitungScraper:
             self.driver.execute_script("arguments[0].scrollIntoView();", download_btn)
             download_btn.click()
 
+            # Check Tabs
+            time.sleep(2)
+            self.handle_tabs()
+
             today_str = datetime.today().strftime('%Y-%m-%d')
             filename = f"{today_str}_Wormser_Zeitung.pdf"
 
@@ -194,7 +237,6 @@ class ZeitungScraper:
             if saved_path:
                 self.target_path = saved_path
 
-            # WICHTIG: Logout am Ende der Logik
             self.logout()
 
         except Exception as e:
@@ -208,13 +250,9 @@ class ZeitungScraper:
             self.setup_driver()
             self.login()
 
-            url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={start_date_str}&widgetId=1020&region=E120"
-            logger.info(f"Rufe Archiv-URL auf: {url}")
-            self.driver.get(url)
-            time.sleep(2)
-
             start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
 
+            # Wir iterieren durch die Tage
             for i in range(days_range):
                 current_date = start_date - timedelta(days=i)
                 date_str_iso = current_date.strftime("%Y-%m-%d")
@@ -226,26 +264,43 @@ class ZeitungScraper:
                     logger.info(f"Überspringe {date_str_iso}, existiert bereits.")
                     continue
 
+                # WICHTIG: Wir laden die Seite für JEDEN Download neu (oder gehen auf die URL)
+                # Das verhindert, dass wir auf der falschen Seite hängen oder DOM-Elemente "stale" werden.
+                # Wir rufen direkt die Widget-URL für diesen Tag auf (dateTo = Tag)
+                url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={date_str_iso}&widgetId=1020&region=E120"
+                logger.info(f"Navigiere zu {date_str_iso}...")
+                self.driver.get(url)
+                time.sleep(2)  # Seite laden lassen
+
                 css_selector = f".pdf-date-{date_str_iso}"
 
                 try:
+                    # Suche spezifisch nach dem Container für diesen Tag
                     container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
                     link = container.find_element(By.TAG_NAME, "a")
 
-                    logger.info(f"Lade Ausgabe für {date_str_iso}...")
+                    logger.info(f"Klicke Download für {date_str_iso}...")
+
+                    # Manche JS Buttons öffnen neue Fenster, manche nicht.
+                    # Wir klicken und schauen was passiert.
                     self.driver.execute_script("arguments[0].click();", link)
 
+                    # Warten falls Tab aufgeht
+                    time.sleep(3)
+                    self.handle_tabs()
+
+                    # Jetzt warten wir auf genau diese Datei
                     res = self.wait_for_download(target_filename)
                     if res:
                         downloaded_files.append(res)
-                        time.sleep(2)
+                    else:
+                        logger.error(f"Download für {date_str_iso} fehlgeschlagen (keine Datei).")
 
                 except exceptions.NoSuchElementException:
-                    logger.warning(f"Keine Ausgabe gefunden für {date_str_iso}")
+                    logger.warning(f"Keine Ausgabe für {date_str_iso} gefunden (evtl. Feiertag/Sonntag)")
                 except Exception as e:
                     logger.error(f"Fehler bei {date_str_iso}: {e}")
 
-            # WICHTIG: Logout am Ende der Logik
             self.logout()
 
         except Exception as e:
