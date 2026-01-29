@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # FTS5 Tabelle für Volltextsuche
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS articles 
         USING fts5(filename, date, content)
@@ -23,11 +24,17 @@ def init_db():
 
 def index_pdf(filepath):
     filename = filepath.name
-    date_str = filename.split('_')[0]
+
+    # Datumsextraktion robust machen
+    try:
+        date_str = filename.split('_')[0]
+    except:
+        date_str = "0000-00-00"
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
+    # Prüfen, ob Datei schon indexiert ist
     c.execute("SELECT rowid FROM articles WHERE filename = ?", (filename,))
     if c.fetchone():
         conn.close()
@@ -57,7 +64,7 @@ def search_articles(query):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
-    # FTS Suche
+    # FTS Suche: snippet() erstellt automatisch einen Auszug mit Highlighting
     safe_query = f'"{query}"'
     sql = """
         SELECT filename, date, snippet(articles, 2, '<mark>', '</mark>', '...', 20) as snippet
@@ -65,31 +72,35 @@ def search_articles(query):
         WHERE articles MATCH ? 
         ORDER BY date DESC
     """
-    c.execute(sql, (safe_query,))
 
-    # Ergebnisse umwandeln und Flag setzen
-    results = []
-    for row in c.fetchall():
-        r = dict(row)
-        r['indexed'] = True  # Suchergebnisse sind per Definition indexiert
-        results.append(r)
+    try:
+        c.execute(sql, (safe_query,))
+        results = []
+        for row in c.fetchall():
+            r = dict(row)
+            r['indexed'] = True
+            results.append(r)
+    except Exception as e:
+        logger.error(f"Suchfehler: {e}")
+        results = []
 
     conn.close()
     return results
 
 
-# === HIER IST DIE WICHTIGE ÄNDERUNG ===
 def get_all_files(base_dir):
     """Liest Dateien vom Disk und prüft DB-Status"""
 
     # 1. Hole alle indexierten Dateinamen aus der DB
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    # Wir brauchen nur den Dateinamen zum Abgleich
-    c.execute("SELECT filename FROM articles")
-    db_filenames = {row['filename'] for row in c.fetchall()}
-    conn.close()
+    db_filenames = set()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT filename FROM articles")
+        db_filenames = {row[0] for row in c.fetchall()}
+        conn.close()
+    except Exception:
+        pass  # Falls DB noch nicht existiert
 
     results = []
 
@@ -97,8 +108,6 @@ def get_all_files(base_dir):
     if base_dir.exists():
         for f in base_dir.glob("*.pdf"):
             filename = f.name
-
-            # Datum aus Dateinamen extrahieren (Format: YYYY-MM-DD_...)
             try:
                 date = filename.split('_')[0]
             except:
@@ -110,15 +119,46 @@ def get_all_files(base_dir):
                 'filename': filename,
                 'date': date,
                 'snippet': '',
-                'indexed': is_indexed  # True oder False
+                'indexed': is_indexed
             })
 
     # 3. Sortieren nach Datum (neueste zuerst)
-    # Wir nutzen filename als fallback sortierung
     return sorted(results, key=lambda x: x['filename'], reverse=True)
 
 
-def rebuild_index(download_dir):
+def remove_orphaned_entries(base_dir):
+    """Löscht Einträge aus der DB, die nicht mehr als Datei existieren"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Alle Dateien in der DB holen
+    c.execute("SELECT filename FROM articles")
+    db_files = c.fetchall()
+
+    deleted_count = 0
+    for (filename,) in db_files:
+        file_path = base_dir / filename
+        if not file_path.exists():
+            logger.info(f"Entferne verwaisten Eintrag aus DB: {filename}")
+            c.execute("DELETE FROM articles WHERE filename = ?", (filename,))
+            deleted_count += 1
+
+    if deleted_count > 0:
+        conn.commit()
+        logger.info(f"Bereinigung abgeschlossen. {deleted_count} Einträge entfernt.")
+
+    conn.close()
+
+
+def rebuild_index(base_dir):
+    """Liest alle PDFs neu ein UND löscht alte Einträge"""
     init_db()
-    for pdf_file in download_dir.glob("*.pdf"):
+
+    # 1. Neue Dateien hinzufügen
+    logger.info("Starte Indexierung vorhandener Dateien...")
+    for pdf_file in base_dir.glob("*.pdf"):
         index_pdf(pdf_file)
+
+    # 2. Alte Einträge löschen (Aufräumen)
+    logger.info("Suche nach gelöschten Dateien...")
+    remove_orphaned_entries(base_dir)
