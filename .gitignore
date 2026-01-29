@@ -1,3 +1,7 @@
-downloads/*
-.idea
+.git
 .env
+downloads/
+__pycache__
+*.pyc
+.idea
+.vscode
