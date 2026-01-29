@@ -169,58 +169,49 @@ class ZeitungScraper:
         return set(base_dir.glob("*.pdf"))
 
     def wait_for_download(self, filename_to_save, pre_existing_files):
-        """
-        Wartet, bis eine NEUE Datei im Ordner auftaucht, die nicht in pre_existing_files ist.
-        """
         logger.info(f"Warte auf NEUEN Download für: {filename_to_save}")
 
-        # Cleanup temp files
         for temp in base_dir.glob("*.crdownload"):
             try:
                 os.remove(temp)
             except:
                 pass
 
-        end_time = time.time() + 180  # 3 Minuten Timeout, falls das Internet langsam ist
+        # Timeout 180s - aber wir checken aktiv auf Deadlocks
+        end_time = time.time() + 180
         target_file = base_dir / filename_to_save
 
         while time.time() < end_time:
-            # Aktuellen Stand holen
             current_files = set(base_dir.glob("*.pdf"))
-
-            # Die Differenz bilden: Was ist neu dazu gekommen?
             new_files = current_files - pre_existing_files
-
-            # Temp Dateien prüfen
             temp_files = list(base_dir.glob("*.crdownload"))
 
             if new_files:
-                # Wir haben mindestens eine neue Datei!
-                # Wir nehmen an, das ist unser Download.
-                candidate = list(new_files)[0]  # Nimm die erste neue Datei
+                candidate = list(new_files)[0]
 
-                # Check 1: Ist sie noch im Download-Prozess (.crdownload existiert)?
-                # Wenn ja, warten wir weiter.
+                # Check 1: Noch im Download?
                 if any(t.name.startswith(candidate.name) for t in temp_files):
                     time.sleep(1)
                     continue
 
-                # Check 2: Hat die Datei schon Inhalt?
+                # Check 2: 0 Byte Deadlock?
                 try:
                     if candidate.stat().st_size == 0:
-                        # logger.debug("Neue Datei hat noch 0 Bytes...")
+                        # Wenn Datei da ist aber 0 Byte hat, warten wir kurz.
+                        # Wenn sie nach 10 sek immer noch 0 Byte hat, ist der Download tot.
+                        # (Hier vereinfacht: wir warten einfach weiter, der Timeout regelt das,
+                        # oder der Retry Loop löscht sie später)
                         time.sleep(1)
                         continue
                 except OSError:
                     continue
 
-                    # Check 3: Ist die Größe stabil? (Optional, aber sicher ist sicher)
-                initial_size = candidate.stat().st_size
-                time.sleep(1)
+                    # Check 3: Dateigröße stabil?
                 try:
+                    initial_size = candidate.stat().st_size
+                    time.sleep(2)  # Länger warten für Stabilität
                     if candidate.stat().st_size != initial_size:
-                        # Datei wächst noch
-                        continue
+                        continue  # Wächst noch
                 except:
                     continue
 
@@ -228,7 +219,6 @@ class ZeitungScraper:
                 logger.info(f"Download fertig erkannt: {candidate.name} ({initial_size} Bytes)")
 
                 if candidate.name != filename_to_save:
-                    # Falls Zieldatei im Weg ist (z.B. alter Müll), weg damit
                     if target_file.exists():
                         try:
                             os.remove(target_file)
@@ -247,7 +237,7 @@ class ZeitungScraper:
 
             time.sleep(1)
 
-        logger.warning(f"Timeout! Keine NEUE Datei erhalten für: {filename_to_save}")
+        logger.warning(f"Timeout! Keine NEUE, valide Datei erhalten für: {filename_to_save}")
         return None
 
     def handle_tabs(self):
@@ -270,10 +260,6 @@ class ZeitungScraper:
             self.setup_driver()
             self.login()
 
-            s = SITE_CONFIG["selectors"]
-            download_btn = self.wait.until(EC.element_to_be_clickable(s["download_btn"]))
-            self.driver.execute_script("arguments[0].scrollIntoView();", download_btn)
-
             today_str = datetime.today().strftime('%Y-%m-%d')
             filename = f"{today_str}_Wormser_Zeitung.pdf"
             target_path = base_dir / filename
@@ -283,17 +269,35 @@ class ZeitungScraper:
                 self.logout()
                 return
 
-            # Snapshot VOR dem Klick
-            known_files = self.get_existing_pdfs()
+            # RETRY LOGIK FÜR DAILY
+            for attempt in range(1, 4):
+                try:
+                    logger.info(f"Versuch {attempt}/3 für Daily Download...")
+                    s = SITE_CONFIG["selectors"]
 
-            download_btn.click()
-            time.sleep(2)
-            self.handle_tabs()
+                    # Seite neu laden bei Retry
+                    if attempt > 1:
+                        self.driver.refresh()
+                        time.sleep(3)
 
-            # Warten auf Datei, die NICHT in known_files ist
-            saved_path = self.wait_for_download(filename, known_files)
-            if saved_path:
-                self.target_path = saved_path
+                    download_btn = self.wait.until(EC.element_to_be_clickable(s["download_btn"]))
+                    self.driver.execute_script("arguments[0].scrollIntoView();", download_btn)
+
+                    known_files = self.get_existing_pdfs()
+                    download_btn.click()
+                    time.sleep(2)
+                    self.handle_tabs()
+
+                    saved_path = self.wait_for_download(filename, known_files)
+                    if saved_path:
+                        self.target_path = saved_path
+                        break  # Erfolg -> Raus aus Retry Loop
+                    else:
+                        logger.warning(f"Versuch {attempt} fehlgeschlagen (Timeout).")
+
+                except Exception as e:
+                    logger.error(f"Fehler bei Versuch {attempt}: {e}")
+                    time.sleep(5)  # Warten vor nächstem Versuch
 
             self.logout()
 
@@ -313,7 +317,6 @@ class ZeitungScraper:
             for i in range(days_range):
                 current_date = start_date - timedelta(days=i)
                 date_str_iso = current_date.strftime("%Y-%m-%d")
-
                 target_filename = f"{date_str_iso}_Wormser_Zeitung.pdf"
                 target_path = base_dir / target_filename
 
@@ -321,39 +324,47 @@ class ZeitungScraper:
                     logger.info(f"Überspringe {date_str_iso}, existiert bereits (Valide).")
                     continue
 
-                url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={date_str_iso}&widgetId=1020&region=E120"
-                logger.info(f"Navigiere zu {date_str_iso}...")
-                self.driver.get(url)
-                time.sleep(2)
+                # RETRY LOGIK FÜR ARCHIV
+                for attempt in range(1, 4):  # Max 3 Versuche pro Tag
+                    logger.info(f"Versuch {attempt}/3 für {date_str_iso}...")
 
-                css_selector = f".pdf-date-{date_str_iso}"
+                    try:
+                        # Bei jedem Versuch URL neu laden -> Clean Slate
+                        url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={date_str_iso}&widgetId=1020&region=E120"
+                        self.driver.get(url)
+                        time.sleep(3)  # Etwas länger warten beim Laden
 
-                try:
-                    container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
-                    link = container.find_element(By.TAG_NAME, "a")
+                        css_selector = f".pdf-date-{date_str_iso}"
 
-                    # Snapshot VOR dem Klick für DIESEN Tag
-                    known_files = self.get_existing_pdfs()
+                        try:
+                            container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
+                            link = container.find_element(By.TAG_NAME, "a")
 
-                    logger.info(f"Klicke Download für {date_str_iso}...")
-                    self.driver.execute_script("arguments[0].click();", link)
+                            known_files = self.get_existing_pdfs()
+                            logger.info(f"Klicke Download...")
+                            self.driver.execute_script("arguments[0].click();", link)
 
-                    time.sleep(3)
-                    self.handle_tabs()
+                            time.sleep(3)
+                            self.handle_tabs()
 
-                    # Wir warten strikt, bis dieser Download fertig ist
-                    res = self.wait_for_download(target_filename, known_files)
-                    if res:
-                        downloaded_files.append(res)
-                        # Kurze Pause, damit Filesystem safe ist
-                        time.sleep(1)
-                    else:
-                        logger.error(f"Download für {date_str_iso} fehlgeschlagen.")
+                            res = self.wait_for_download(target_filename, known_files)
+                            if res:
+                                downloaded_files.append(res)
+                                time.sleep(1)
+                                break  # ERFOLG: Nächster Tag
+                            else:
+                                logger.warning(f"Download Timeout für {date_str_iso}.")
+                                # Cleanup: Eventuelle 0-Byte Leichen löschen für nächsten Versuch
+                                if target_path.exists() and target_path.stat().st_size == 0:
+                                    os.remove(target_path)
 
-                except exceptions.NoSuchElementException:
-                    logger.warning(f"Keine Ausgabe für {date_str_iso} gefunden.")
-                except Exception as e:
-                    logger.error(f"Fehler bei {date_str_iso}: {e}")
+                        except exceptions.NoSuchElementException:
+                            logger.warning(f"Keine Ausgabe für {date_str_iso} gefunden.")
+                            break  # Kein Retry nötig, wenn es die Zeitung nicht gibt
+
+                    except Exception as e:
+                        logger.error(f"Fehler bei {date_str_iso} (Versuch {attempt}): {e}")
+                        time.sleep(5)
 
             self.logout()
 
