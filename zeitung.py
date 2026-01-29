@@ -152,58 +152,83 @@ class ZeitungScraper:
     def clean_target_if_broken(self, target_path):
         """Löscht Datei, falls sie existiert aber leer/zu klein ist."""
         if target_path.exists():
-            # Alles unter 10KB ist verdächtig für eine Zeitung (meist > 10MB)
             if target_path.stat().st_size < 10 * 1024:
                 logger.warning(f"Datei {target_path.name} existiert, ist aber defekt (<10KB). Lösche sie.")
                 try:
                     os.remove(target_path)
-                    return False  # Existiert nicht mehr -> Neu laden
+                    return False
                 except OSError as e:
                     logger.error(f"Konnte defekte Datei nicht löschen: {e}")
-                    return True  # Wir können nichts tun, also überspringen wir lieber
+                    return True
             else:
-                return True  # Datei existiert und ist groß genug
-        return False  # Existiert nicht
+                return True
+        return False
 
-    def wait_for_download(self, filename_to_save):
-        logger.info(f"Warte auf Download für: {filename_to_save}")
+    def get_existing_pdfs(self):
+        """Hilfsfunktion: Gibt ein Set aller aktuellen PDF-Pfade zurück"""
+        return set(base_dir.glob("*.pdf"))
 
-        # Cleanup: Lösche alte .crdownload Leichen
+    def wait_for_download(self, filename_to_save, pre_existing_files):
+        """
+        Wartet, bis eine NEUE Datei im Ordner auftaucht, die nicht in pre_existing_files ist.
+        """
+        logger.info(f"Warte auf NEUEN Download für: {filename_to_save}")
+
+        # Cleanup temp files
         for temp in base_dir.glob("*.crdownload"):
             try:
                 os.remove(temp)
             except:
                 pass
 
-        end_time = time.time() + 120  # Timeout erhöht auf 120s
+        end_time = time.time() + 180  # 3 Minuten Timeout, falls das Internet langsam ist
         target_file = base_dir / filename_to_save
 
         while time.time() < end_time:
-            files = list(base_dir.glob("*.pdf"))
+            # Aktuellen Stand holen
+            current_files = set(base_dir.glob("*.pdf"))
+
+            # Die Differenz bilden: Was ist neu dazu gekommen?
+            new_files = current_files - pre_existing_files
+
+            # Temp Dateien prüfen
             temp_files = list(base_dir.glob("*.crdownload"))
 
-            # Logik:
-            # 1. Keine Temp Dateien mehr
-            # 2. Mindestens eine PDF da
-            if files and not temp_files:
-                latest_file = max(files, key=os.path.getctime)
+            if new_files:
+                # Wir haben mindestens eine neue Datei!
+                # Wir nehmen an, das ist unser Download.
+                candidate = list(new_files)[0]  # Nimm die erste neue Datei
 
-                # Sicherheitscheck 1: Ist die Datei zu alt? (Älter als 2 Min -> ignorieren)
-                if time.time() - os.path.getctime(latest_file) > 120:
+                # Check 1: Ist sie noch im Download-Prozess (.crdownload existiert)?
+                # Wenn ja, warten wir weiter.
+                if any(t.name.startswith(candidate.name) for t in temp_files):
                     time.sleep(1)
                     continue
 
-                # Sicherheitscheck 2: HAT DIE DATEI INHALT?
+                # Check 2: Hat die Datei schon Inhalt?
                 try:
-                    if latest_file.stat().st_size == 0:
-                        # logger.debug("Datei hat noch 0 Bytes...")
-                        time.sleep(0.5)
+                    if candidate.stat().st_size == 0:
+                        # logger.debug("Neue Datei hat noch 0 Bytes...")
+                        time.sleep(1)
                         continue
                 except OSError:
-                    continue  # Datei evtl. gerade gesperrt
+                    continue
 
-                # Umbenennung
-                if latest_file.name != filename_to_save:
+                    # Check 3: Ist die Größe stabil? (Optional, aber sicher ist sicher)
+                initial_size = candidate.stat().st_size
+                time.sleep(1)
+                try:
+                    if candidate.stat().st_size != initial_size:
+                        # Datei wächst noch
+                        continue
+                except:
+                    continue
+
+                # ALLES OK -> Umbenennen
+                logger.info(f"Download fertig erkannt: {candidate.name} ({initial_size} Bytes)")
+
+                if candidate.name != filename_to_save:
+                    # Falls Zieldatei im Weg ist (z.B. alter Müll), weg damit
                     if target_file.exists():
                         try:
                             os.remove(target_file)
@@ -211,19 +236,18 @@ class ZeitungScraper:
                             pass
 
                     try:
-                        shutil.move(str(latest_file), str(target_file))
-                        logger.info(f"Gespeichert als: {filename_to_save} (Größe: {target_file.stat().st_size} Bytes)")
+                        shutil.move(str(candidate), str(target_file))
+                        logger.info(f"Gespeichert als: {filename_to_save}")
                         return target_file
                     except Exception as e:
                         logger.error(f"Fehler beim Umbenennen: {e}")
                         return None
                 else:
-                    logger.info(f"Download fertig: {filename_to_save} (Größe: {latest_file.stat().st_size} Bytes)")
                     return target_file
 
             time.sleep(1)
 
-        logger.warning(f"Timeout! Datei nicht erhalten oder leer: {filename_to_save}")
+        logger.warning(f"Timeout! Keine NEUE Datei erhalten für: {filename_to_save}")
         return None
 
     def handle_tabs(self):
@@ -254,17 +278,20 @@ class ZeitungScraper:
             filename = f"{today_str}_Wormser_Zeitung.pdf"
             target_path = base_dir / filename
 
-            # Prüfen ob wir überhaupt laden müssen
             if self.clean_target_if_broken(target_path):
                 logger.info("Datei existiert bereits und ist valide. Überspringe.")
                 self.logout()
                 return
 
+            # Snapshot VOR dem Klick
+            known_files = self.get_existing_pdfs()
+
             download_btn.click()
             time.sleep(2)
             self.handle_tabs()
 
-            saved_path = self.wait_for_download(filename)
+            # Warten auf Datei, die NICHT in known_files ist
+            saved_path = self.wait_for_download(filename, known_files)
             if saved_path:
                 self.target_path = saved_path
 
@@ -290,7 +317,6 @@ class ZeitungScraper:
                 target_filename = f"{date_str_iso}_Wormser_Zeitung.pdf"
                 target_path = base_dir / target_filename
 
-                # Check ob existiert + Check ob kaputt (0 Byte)
                 if self.clean_target_if_broken(target_path):
                     logger.info(f"Überspringe {date_str_iso}, existiert bereits (Valide).")
                     continue
@@ -306,15 +332,21 @@ class ZeitungScraper:
                     container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
                     link = container.find_element(By.TAG_NAME, "a")
 
+                    # Snapshot VOR dem Klick für DIESEN Tag
+                    known_files = self.get_existing_pdfs()
+
                     logger.info(f"Klicke Download für {date_str_iso}...")
                     self.driver.execute_script("arguments[0].click();", link)
 
                     time.sleep(3)
                     self.handle_tabs()
 
-                    res = self.wait_for_download(target_filename)
+                    # Wir warten strikt, bis dieser Download fertig ist
+                    res = self.wait_for_download(target_filename, known_files)
                     if res:
                         downloaded_files.append(res)
+                        # Kurze Pause, damit Filesystem safe ist
+                        time.sleep(1)
                     else:
                         logger.error(f"Download für {date_str_iso} fehlgeschlagen.")
 
