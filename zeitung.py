@@ -108,11 +108,9 @@ class ZeitungScraper:
         s = SITE_CONFIG["selectors"]
         c = SITE_CONFIG["credentials"]
 
-        # Geht exakt auf die Dashboard URL aus der Config
         logger.info(f"Lade Seite: {SITE_CONFIG['url']}")
         self.driver.get(SITE_CONFIG["url"])
 
-        # Cookie Banner
         try:
             time.sleep(2)
             cookie_btn = self.driver.find_element(*s["cookie_accept_btn"])
@@ -121,7 +119,6 @@ class ZeitungScraper:
         except Exception:
             pass
 
-        # Bereits eingeloggt?
         try:
             if len(self.driver.find_elements(*s["logout_btn"])) > 0:
                 logger.info("Bereits eingeloggt.")
@@ -129,7 +126,6 @@ class ZeitungScraper:
         except:
             pass
 
-        # Login
         logger.info("Logge ein...")
         login_link = self.wait.until(EC.element_to_be_clickable(s["login_link"]))
         self.driver.execute_script("arguments[0].click();", login_link)
@@ -163,43 +159,67 @@ class ZeitungScraper:
         except:
             pass
 
-    # --- DIE ALTE, EINFACHE LOGIK FÜR HEUTE ---
-    def wait_simple(self, filename_to_save):
-        logger.info(f"Warte auf Datei (Simple Mode): {filename_to_save}")
+    # --- HILFSFUNKTIONEN ---
+    def get_existing_pdfs(self):
+        """Erstellt eine Liste der Dateien, die VOR dem Download schon da waren."""
+        return set(base_dir.glob("*.pdf"))
+
+    # --- DIE KORRIGIERTE LOGIK ---
+    def wait_simple(self, filename_to_save, pre_existing_files):
+        """
+        Wartet, bis eine PDF auftaucht, die NICHT in pre_existing_files ist.
+        Damit verhindern wir garantiert, dass alte Dateien umbenannt werden.
+        """
+        logger.info(f"Warte auf NEUE Datei: {filename_to_save}")
         end_time = time.time() + 180
         target_file = base_dir / filename_to_save
 
         while time.time() < end_time:
-            files = list(base_dir.glob("*.pdf"))
+            # Aktueller Inhalt
+            current_files = set(base_dir.glob("*.pdf"))
+            # Nur Dateien betrachten, die vorher NICHT da waren
+            new_files = current_files - pre_existing_files
+
+            # Temporäre Downloads
             temp_files = list(base_dir.glob("*.crdownload"))
 
-            # Wenn PDF da ist und KEIN Download mehr läuft -> Neueste nehmen
-            if files and not temp_files:
-                latest_file = max(files, key=os.path.getctime)
+            if new_files:
+                # Wir haben einen Kandidaten!
+                candidate = list(new_files)[0]
+
+                # Check: Ist er noch am Laden? (Name matcht mit .crdownload)
+                if any(t.name.startswith(candidate.name) for t in temp_files):
+                    time.sleep(1)
+                    continue
 
                 # Check: Ist die Datei valide? (>0 Byte)
                 try:
-                    if latest_file.stat().st_size > 0:
-                        if latest_file.name != filename_to_save:
+                    if candidate.stat().st_size > 0:
+                        # Stabilitäts-Check (Optional, aber gut): Warten ob Größe gleich bleibt
+                        size_now = candidate.stat().st_size
+                        time.sleep(1)
+                        if candidate.stat().st_size != size_now:
+                            continue  # Wächst noch
+
+                        # Alles gut -> Umbenennen oder fertig melden
+                        if candidate.name != filename_to_save:
                             if target_file.exists():
                                 os.remove(target_file)
-                            shutil.move(str(latest_file), str(target_file))
+                            shutil.move(str(candidate), str(target_file))
                             logger.info(f"Gespeichert als: {filename_to_save}")
                             return target_file
                         else:
+                            # Sie heißt schon richtig (Chrome hat sie direkt so benannt)
                             return target_file
                 except:
                     pass
 
             time.sleep(1)
 
-        logger.error("Timeout: Keine Datei erhalten.")
+        logger.error("Timeout: Keine NEUE Datei erhalten.")
         return None
 
     def run_daily(self):
-        """
-        Originaler Ablauf: Dashboard URL -> Login -> Klick -> Warten -> Logout.
-        """
         try:
             self.setup_driver()
             self.login()
@@ -213,18 +233,21 @@ class ZeitungScraper:
                 logger.info("Datei existiert bereits. Fertig.")
                 return
 
-            # Button suchen & Klicken
             download_btn = WebDriverWait(self.driver, 20).until(
                 EC.element_to_be_clickable(s["download_btn"])
             )
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", download_btn)
             time.sleep(1)
 
+            # SNAPSHOT MACHEN
+            logger.info("Erstelle Snapshot der existierenden Dateien...")
+            known_files = self.get_existing_pdfs()
+
             logger.info("Klicke Download Button...")
             self.driver.execute_script("arguments[0].click();", download_btn)
 
-            # Warten (Simple Logic)
-            saved_path = self.wait_simple(filename)
+            # Warten (mit Snapshot-Vergleich!)
+            saved_path = self.wait_simple(filename, known_files)
 
             if saved_path:
                 self.target_path = saved_path
@@ -240,32 +263,10 @@ class ZeitungScraper:
                 except:
                     pass
 
-    # --- ARCHIV FUNKTION (Getrennt) ---
-    def get_existing_pdfs(self):
-        return set(base_dir.glob("*.pdf"))
-
+    # --- ARCHIV FUNKTION ---
     def wait_for_download_archive(self, filename_to_save, pre_existing_files):
-        end_time = time.time() + 180
-        target_file = base_dir / filename_to_save
-
-        while time.time() < end_time:
-            current_files = set(base_dir.glob("*.pdf"))
-            new_files = current_files - pre_existing_files
-            temp_files = list(base_dir.glob("*.crdownload"))
-
-            if new_files:
-                candidate = list(new_files)[0]
-                if not any(t.name.startswith(candidate.name) for t in temp_files):
-                    try:
-                        if candidate.stat().st_size > 0:
-                            if candidate.name != filename_to_save:
-                                if target_file.exists(): os.remove(target_file)
-                                shutil.move(str(candidate), str(target_file))
-                            return target_file
-                    except:
-                        pass
-            time.sleep(1)
-        return None
+        # Nutzt exakt dieselbe Logik wie wait_simple, da sie sicher ist.
+        return self.wait_simple(filename_to_save, pre_existing_files)
 
     def run_archive(self, start_date_str, days_range):
         downloaded_files = []
@@ -293,10 +294,13 @@ class ZeitungScraper:
                     container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
                     link = container.find_element(By.TAG_NAME, "a")
 
+                    # SNAPSHOT
                     known_files = self.get_existing_pdfs()
+
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link)
                     self.driver.execute_script("arguments[0].click();", link)
 
+                    # Warten
                     res = self.wait_for_download_archive(target_filename, known_files)
                     if res: downloaded_files.append(res)
                     time.sleep(2)
