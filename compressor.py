@@ -9,50 +9,49 @@ logger = logging.getLogger(__name__)
 def compress_pdf(input_path, power=2):
     """
     Komprimiert ein PDF mit Ghostscript.
-    power:
-        0: default
-        1: pre-press (300 dpi, hohe Qualität)
-        2: ebook (150 dpi, gute Qualität, mittlere Größe) -> UNSER STANDARD
-        3: screen (72 dpi, kleine Größe, Bilder pixelig)
+    Optimiert für Zeitungen (viele Bilder, Mischung aus Text/Grafik).
     """
     input_path = Path(input_path)
     if not input_path.exists():
         logger.error(f"Komprimierung fehlgeschlagen: Datei nicht gefunden {input_path}")
         return False
 
-    # Temp Output Datei
     output_path = input_path.with_name(f"{input_path.stem}_temp.pdf")
 
-    # Ghostscript Qualitäts-Einstellungen
-    quality = {
-        0: '/default',
-        1: '/prepress',
-        2: '/ebook',
-        3: '/screen'
-    }
-
-    gs_setting = quality.get(power, '/ebook')
-
-    # Der Ghostscript Befehl
-    # -dPDFSETTINGS=... setzt die Qualität
-    # -dCompatibilityLevel=1.4 sorgt für Kompatibilität
+    # Ghostscript Befehl - Aggressiv auf RGB und JPEG optimiert
+    # Zeitungen sind oft CMYK und unkomprimiert -> RGB + JPEG spart massiv Platz
     cmd = [
         'ghostscript',
         '-sDEVICE=pdfwrite',
-        f'-dCompatibilityLevel=1.4',
-        f'-dPDFSETTINGS={gs_setting}',
-        '-dNOPAUSE',
-        '-dQUIET',
-        '-dBATCH',
+        '-dCompatibilityLevel=1.4',
+        '-dPDFSETTINGS=/ebook',  # Basis: 150 DPI
+        '-dNOPAUSE', '-dQUIET', '-dBATCH',
+        '-dDetectDuplicateImages=true',
+
+        # Erzwinge RGB (Spart Platz gegenüber CMYK)
+        '-sColorConversionStrategy=RGB',
+        '-dProcessColorModel=/DeviceRGB',
+
+        # Erzwinge JPEG Komprimierung für Bilder (statt lossless Flate)
+        '-dAutoFilterColorImages=false',
+        '-dColorImageFilter=/DCTEncode',
+        '-dAutoFilterGrayImages=false',
+        '-dGrayImageFilter=/DCTEncode',
+
+        # Downsampling strikt anwenden
+        '-dColorImageDownsampleType=/Bicubic',
+        '-dColorImageResolution=144',
+        '-dGrayImageDownsampleType=/Bicubic',
+        '-dGrayImageResolution=144',
+
         f'-sOutputFile={str(output_path)}',
         str(input_path)
     ]
 
     try:
-        logger.info(f"Starte Komprimierung für {input_path.name} (Modus: {gs_setting})...")
+        logger.info(f"Starte optimierte Komprimierung für {input_path.name}...")
         subprocess.run(cmd, check=True)
 
-        # Checken ob es was gebracht hat
         old_size = input_path.stat().st_size
         new_size = output_path.stat().st_size
 
@@ -77,4 +76,6 @@ def compress_pdf(input_path, power=2):
         return False
     except Exception as e:
         logger.error(f"Allgemeiner Fehler bei Komprimierung: {e}")
+        if output_path.exists():
+            os.remove(output_path)
         return False
