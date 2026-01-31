@@ -15,6 +15,14 @@ from selenium.common import exceptions
 from discord_webhook import DiscordWebhook
 from dotenv import load_dotenv
 
+# NEU: Importiere den Kompressor für die PDF-Optimierung
+try:
+    from compressor import compress_pdf
+except ImportError:
+    # Fallback, falls die Datei lokal beim Testen fehlt
+    def compress_pdf(path):
+        return False
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -76,7 +84,7 @@ class ZeitungScraper:
             options.add_argument('--disable-dev-shm-usage')
             target_version = self.get_docker_chrome_version()
         else:
-            target_version = 131
+            target_version = 131  # Hier ggf. deine lokale Version anpassen
 
         options.add_argument('--disable-extensions')
         options.add_argument('--window-size=1920,1080')
@@ -165,10 +173,11 @@ class ZeitungScraper:
         return False
 
     def get_existing_pdfs(self):
-        """Hilfsfunktion: Gibt ein Set aller aktuellen PDF-Pfade zurück"""
+        """Erstellt einen Snapshot der aktuellen Dateien im Ordner"""
         return set(base_dir.glob("*.pdf"))
 
     def wait_for_download(self, filename_to_save, pre_existing_files):
+        """Wartet auf eine NEUE Datei, die nicht im Snapshot war"""
         logger.info(f"Warte auf NEUEN Download für: {filename_to_save}")
 
         for temp in base_dir.glob("*.crdownload"):
@@ -177,7 +186,6 @@ class ZeitungScraper:
             except:
                 pass
 
-        # Timeout 180s - aber wir checken aktiv auf Deadlocks
         end_time = time.time() + 180
         target_file = base_dir / filename_to_save
 
@@ -197,10 +205,6 @@ class ZeitungScraper:
                 # Check 2: 0 Byte Deadlock?
                 try:
                     if candidate.stat().st_size == 0:
-                        # Wenn Datei da ist aber 0 Byte hat, warten wir kurz.
-                        # Wenn sie nach 10 sek immer noch 0 Byte hat, ist der Download tot.
-                        # (Hier vereinfacht: wir warten einfach weiter, der Timeout regelt das,
-                        # oder der Retry Loop löscht sie später)
                         time.sleep(1)
                         continue
                 except OSError:
@@ -209,13 +213,12 @@ class ZeitungScraper:
                     # Check 3: Dateigröße stabil?
                 try:
                     initial_size = candidate.stat().st_size
-                    time.sleep(2)  # Länger warten für Stabilität
+                    time.sleep(2)
                     if candidate.stat().st_size != initial_size:
-                        continue  # Wächst noch
+                        continue
                 except:
                     continue
 
-                # ALLES OK -> Umbenennen
                 logger.info(f"Download fertig erkannt: {candidate.name} ({initial_size} Bytes)")
 
                 if candidate.name != filename_to_save:
@@ -228,11 +231,18 @@ class ZeitungScraper:
                     try:
                         shutil.move(str(candidate), str(target_file))
                         logger.info(f"Gespeichert als: {filename_to_save}")
+
+                        # --- KOMPRIMIERUNG ---
+                        compress_pdf(target_file)
+                        # ---------------------
+
                         return target_file
                     except Exception as e:
                         logger.error(f"Fehler beim Umbenennen: {e}")
                         return None
                 else:
+                    # Auch hier komprimieren, falls der Name zufällig schon stimmte
+                    compress_pdf(target_file)
                     return target_file
 
             time.sleep(1)
@@ -269,13 +279,12 @@ class ZeitungScraper:
                 self.logout()
                 return
 
-            # RETRY LOGIK FÜR DAILY
+            # RETRY LOGIK
             for attempt in range(1, 4):
                 try:
                     logger.info(f"Versuch {attempt}/3 für Daily Download...")
                     s = SITE_CONFIG["selectors"]
 
-                    # Seite neu laden bei Retry
                     if attempt > 1:
                         self.driver.refresh()
                         time.sleep(3)
@@ -291,13 +300,13 @@ class ZeitungScraper:
                     saved_path = self.wait_for_download(filename, known_files)
                     if saved_path:
                         self.target_path = saved_path
-                        break  # Erfolg -> Raus aus Retry Loop
+                        break
                     else:
                         logger.warning(f"Versuch {attempt} fehlgeschlagen (Timeout).")
 
                 except Exception as e:
                     logger.error(f"Fehler bei Versuch {attempt}: {e}")
-                    time.sleep(5)  # Warten vor nächstem Versuch
+                    time.sleep(5)
 
             self.logout()
 
@@ -324,15 +333,13 @@ class ZeitungScraper:
                     logger.info(f"Überspringe {date_str_iso}, existiert bereits (Valide).")
                     continue
 
-                # RETRY LOGIK FÜR ARCHIV
-                for attempt in range(1, 4):  # Max 3 Versuche pro Tag
+                for attempt in range(1, 4):
                     logger.info(f"Versuch {attempt}/3 für {date_str_iso}...")
 
                     try:
-                        # Bei jedem Versuch URL neu laden -> Clean Slate
                         url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={date_str_iso}&widgetId=1020&region=E120"
                         self.driver.get(url)
-                        time.sleep(3)  # Etwas länger warten beim Laden
+                        time.sleep(3)
 
                         css_selector = f".pdf-date-{date_str_iso}"
 
@@ -351,16 +358,15 @@ class ZeitungScraper:
                             if res:
                                 downloaded_files.append(res)
                                 time.sleep(1)
-                                break  # ERFOLG: Nächster Tag
+                                break
                             else:
                                 logger.warning(f"Download Timeout für {date_str_iso}.")
-                                # Cleanup: Eventuelle 0-Byte Leichen löschen für nächsten Versuch
                                 if target_path.exists() and target_path.stat().st_size == 0:
                                     os.remove(target_path)
 
                         except exceptions.NoSuchElementException:
                             logger.warning(f"Keine Ausgabe für {date_str_iso} gefunden.")
-                            break  # Kein Retry nötig, wenn es die Zeitung nicht gibt
+                            break
 
                     except Exception as e:
                         logger.error(f"Fehler bei {date_str_iso} (Versuch {attempt}): {e}")

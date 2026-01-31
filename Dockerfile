@@ -1,13 +1,9 @@
-# WICHTIG: Wir pinnen auf "bookworm" (Debian 12) für Stabilität
 FROM python:3.10-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV RUNNING_IN_DOCKER=true
 
-# 1. System-Updates & Abhängigkeiten
-# libgconf-2-4 wurde entfernt.
-# libgbm1 und libasound2 hinzugefügt (wichtig für Headless Chrome!)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -15,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     make \
     gcc \
+    ghostscript \
     libglib2.0-0 \
     libnss3 \
     libfontconfig1 \
@@ -37,8 +34,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# 4. Code kopieren & Ordner erstellen
+# 4. Code kopieren
 COPY . .
+
+# Ordner für Downloads erstellen
 RUN mkdir -p /app/downloads
 
+# Startbefehl (Gunicorn)
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "--timeout", "120", "app:app"]
