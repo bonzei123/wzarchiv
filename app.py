@@ -1,10 +1,10 @@
 import os
 import threading
 import logging
-import fcntl  # NEU: Für File-Locking
-import atexit  # NEU: Zum Aufräumen
+import fcntl
+import atexit
 from datetime import datetime, timedelta
-from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
+from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request, Response
 from flask_basicauth import BasicAuth
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from zeitung import ZeitungScraper, base_dir
 import indexer
 
-# Kompressor für manuelle Ausführung importieren
 try:
     from compressor import compress_pdf
 except ImportError:
@@ -24,7 +23,6 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev_key')
 
-# Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -137,7 +135,7 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER (MIT LOCK FÜR GUNICORN) ---
+# --- SCHEDULER ---
 def job_download():
     logger.info("⏰ 06:00 - Auto-Download gestartet")
     try_start_process(run_scraper_background)
@@ -149,17 +147,10 @@ def job_reindex():
 
 
 def start_scheduler():
-    """Startet den Scheduler nur EINMAL, auch bei mehreren Workern"""
     try:
-        # Wir versuchen eine Lock-Datei zu erstellen und exklusiv zu sperren
-        # O_CREAT | O_WRONLY sorgt dafür, dass die Datei erstellt wird, falls nicht da
         lock_file = open("scheduler.lock", "w")
-
-        # LOCK_EX: Exklusiver Lock
-        # LOCK_NB: Non-Blocking (wirft Fehler, wenn schon gesperrt)
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        # Wenn wir hier sind, haben wir den Lock!
         scheduler = BackgroundScheduler()
         scheduler.add_job(func=job_download, trigger="cron", hour=6, minute=0)
         scheduler.add_job(func=job_reindex, trigger="cron", hour=6, minute=15)
@@ -167,7 +158,6 @@ def start_scheduler():
 
         logger.info("✅ Scheduler erfolgreich in diesem Worker gestartet (Lock erhalten).")
 
-        # Beim Beenden des Programms Lock freigeben
         def unlock():
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             lock_file.close()
@@ -175,11 +165,9 @@ def start_scheduler():
         atexit.register(unlock)
 
     except IOError:
-        # Lock konnte nicht erhalten werden -> Scheduler läuft schon woanders
         logger.info("ℹ️ Scheduler läuft bereits in einem anderen Worker. Überspringe.")
 
 
-# Scheduler initialisieren
 start_scheduler()
 
 
@@ -279,6 +267,19 @@ def compress_file_route(filename):
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
+
+
+# NEU: Logout Route
+@app.route('/logout')
+def logout():
+    # Wir senden einen 401 Fehler. Browser reagieren darauf meist mit dem Löschen
+    # der gecachten Zugangsdaten und zeigen das Login-Fenster erneut an.
+    # Wenn man dort "Abbrechen" klickt, sieht man diese Nachricht.
+    return Response(
+        'Erfolgreich ausgeloggt. <a href="/">Neu einloggen</a>',
+        401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'}
+    )
 
 
 if __name__ == '__main__':

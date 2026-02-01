@@ -6,7 +6,8 @@
     <title>Zeitungs Archiv</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f0f2f5; }
+        body { background-color: #f0f2f5; display: flex; flex-direction: column; min-height: 100vh; }
+        .main-content { flex: 1; }
         .card { transition: transform 0.2s; border: none; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
         .pdf-icon { font-size: 3rem; color: #dc3545; display: block; margin-bottom: 10px; }
@@ -18,135 +19,145 @@
 </head>
 <body>
 
-    <div class="header-bg">
-        <div class="container text-center">
-            <h1>📰 Digitales Zeitungsarchiv</h1>
-            <p class="opacity-75">Durchsuchbare Sammlung der Wormser Zeitung</p>
+    <div class="main-content">
+        <div class="header-bg">
+            <div class="container text-center">
+                <h1>📰 Digitales Zeitungsarchiv</h1>
+                <p class="opacity-75">Durchsuchbare Sammlung der Wormser Zeitung</p>
 
-            <!-- Suche -->
-            <div class="row justify-content-center mt-4">
-                <div class="col-md-6">
-                    <form action="/" method="get" class="d-flex gap-2">
-                        <input type="text" name="q" class="form-control form-control-lg" placeholder="Schlagwortsuche (Volltext)..." value="{{ query }}">
-                        <button type="submit" class="btn btn-warning btn-lg">Suchen</button>
-                        {% if query %}
-                            <a href="/" class="btn btn-outline-light btn-lg">X</a>
-                        {% endif %}
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="container mb-5">
-        <!-- Buttons & Status (NUR FÜR ADMINS SICHTBAR) -->
-        {% if admin_user %}
-        <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-white rounded shadow-sm border">
-            <div class="d-flex align-items-center gap-3">
-                <strong>Admin Konsole:</strong>
-                {% if is_scraping %}
-                    <span class="badge bg-secondary">⚙️ System arbeitet...</span>
-                {% else %}
-                    <span class="badge bg-success">✓ Bereit</span>
-                {% endif %}
-            </div>
-            <div class="btn-group">
-                <a href="{{ url_for('trigger_scrape') }}" class="btn btn-primary">⬇️ Heute laden</a>
-                <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#archiveModal">
-                    📅 Archiv Suche
-                </button>
-                <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen?')">📑 Index neu bauen</a>
-            </div>
-        </div>
-        {% endif %}
-
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-
-        <!-- Wochen-Navigation (Nur wenn nicht gesucht wird) -->
-        {% if not query %}
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <a href="/?week={{ prev_week }}" class="btn btn-outline-primary">&laquo; Vorherige Woche</a>
-
-            <div class="d-flex gap-2 align-items-center">
-                <span class="text-muted">Springe zu:</span>
-                <div class="dropdown">
-                    <button class="btn btn-light dropdown-toggle nav-week" type="button" data-bs-toggle="dropdown">
-                        Woche {{ selected_week }}
-                    </button>
-                    <ul class="dropdown-menu" style="max-height: 300px; overflow-y: auto;">
-                        {% for week in available_weeks %}
-                            <li><a class="dropdown-item {% if week == selected_week %}active{% endif %}" href="/?week={{ week }}">{{ week }}</a></li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </div>
-
-            <a href="/?week={{ next_week }}" class="btn btn-outline-primary">Nächste Woche &raquo;</a>
-        </div>
-        {% endif %}
-
-        <!-- Kachel Grid -->
-        <div class="row row-cols-1 row-cols-md-3 row-cols-lg-4 g-4">
-            {% for file in files %}
-            <div class="col">
-                <div class="card h-100 p-3 text-center {% if not file.indexed %}border-warning{% endif %}">
-                    <a href="{{ url_for('download_file', filename=file.filename, search=query) }}" target="_blank" class="text-decoration-none text-dark">
-                        <div class="card-body">
-
-                            <div class="position-absolute top-0 end-0 m-2">
-                                {% if not file.indexed %}
-                                    <span class="badge bg-warning text-dark shadow-sm">Nicht Indexiert</span>
-                                {% endif %}
-                            </div>
-
-                            <span class="pdf-icon {% if not file.indexed %}opacity-50{% endif %}">📄</span>
-
-                            <h5 class="card-title">{{ file.date }}</h5>
-                            <p class="card-text small text-muted text-truncate mb-1">{{ file.filename }}</p>
-                            <span class="badge bg-light text-dark border">{{ file.size_mb }} MB</span>
-
-                            {% if file.snippet %}
-                                <div class="snippet mt-2 border-top pt-2">
-                                    "...{{ file.snippet|safe }}..."
-                                </div>
+                <!-- Suche -->
+                <div class="row justify-content-center mt-4">
+                    <div class="col-md-6">
+                        <form action="/" method="get" class="d-flex gap-2">
+                            <input type="text" name="q" class="form-control form-control-lg" placeholder="Schlagwortsuche (Volltext)..." value="{{ query }}">
+                            <button type="submit" class="btn btn-warning btn-lg">Suchen</button>
+                            {% if query %}
+                                <a href="/" class="btn btn-outline-light btn-lg">X</a>
                             {% endif %}
-                        </div>
-                    </a>
-                    <div class="card-footer bg-white border-0">
-                        <div class="d-flex gap-2 mb-2">
-                            <a href="{{ url_for('download_file', filename=file.filename) }}#search={{ query }}" target="_blank" class="btn btn-sm {% if file.indexed %}btn-outline-primary{% else %}btn-outline-warning{% endif %} w-100">
-                                👀 Lesen
-                            </a>
-                            <a href="{{ url_for('download_file', filename=file.filename, dl=1) }}" class="btn btn-sm btn-secondary" title="Herunterladen">
-                                💾
-                            </a>
-                        </div>
-
-                        <!-- Admin: Komprimieren Button -->
-                        {% if admin_user %}
-                        <a href="{{ url_for('compress_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-danger w-100" title="Manuell komprimieren (Überschreibt nur wenn kleiner)">
-                            ⚡ Komprimieren
-                        </a>
-                        {% endif %}
+                        </form>
                     </div>
                 </div>
             </div>
-            {% else %}
-            <div class="col-12 text-center text-muted py-5">
-                <h3>Keine Ausgaben in dieser Woche 🤷‍♂️</h3>
-                <p>Versuche eine andere Woche über das Menü oder starte einen Download.</p>
+        </div>
+
+        <div class="container mb-5">
+            <!-- Buttons & Status (NUR FÜR ADMINS SICHTBAR) -->
+            {% if admin_user %}
+            <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-white rounded shadow-sm border">
+                <div class="d-flex align-items-center gap-3">
+                    <strong>Admin Konsole:</strong>
+                    {% if is_scraping %}
+                        <span class="badge bg-secondary">⚙️ System arbeitet...</span>
+                    {% else %}
+                        <span class="badge bg-success">✓ Bereit</span>
+                    {% endif %}
+                </div>
+                <div class="btn-group">
+                    <a href="{{ url_for('trigger_scrape') }}" class="btn btn-primary">⬇️ Heute laden</a>
+                    <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#archiveModal">
+                        📅 Archiv Suche
+                    </button>
+                    <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen?')">📑 Index neu bauen</a>
+                </div>
             </div>
-            {% endfor %}
+            {% endif %}
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <!-- Wochen-Navigation -->
+            {% if not query %}
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <a href="/?week={{ prev_week }}" class="btn btn-outline-primary">&laquo; Vorherige Woche</a>
+
+                <div class="d-flex gap-2 align-items-center">
+                    <span class="text-muted">Springe zu:</span>
+                    <div class="dropdown">
+                        <button class="btn btn-light dropdown-toggle nav-week" type="button" data-bs-toggle="dropdown">
+                            Woche {{ selected_week }}
+                        </button>
+                        <ul class="dropdown-menu" style="max-height: 300px; overflow-y: auto;">
+                            {% for week in available_weeks %}
+                                <li><a class="dropdown-item {% if week == selected_week %}active{% endif %}" href="/?week={{ week }}">{{ week }}</a></li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+
+                <a href="/?week={{ next_week }}" class="btn btn-outline-primary">Nächste Woche &raquo;</a>
+            </div>
+            {% endif %}
+
+            <!-- Kachel Grid -->
+            <div class="row row-cols-1 row-cols-md-3 row-cols-lg-4 g-4">
+                {% for file in files %}
+                <div class="col">
+                    <div class="card h-100 p-3 text-center {% if not file.indexed %}border-warning{% endif %}">
+                        <a href="{{ url_for('download_file', filename=file.filename, search=query) }}" target="_blank" class="text-decoration-none text-dark">
+                            <div class="card-body">
+
+                                <div class="position-absolute top-0 end-0 m-2">
+                                    {% if not file.indexed %}
+                                        <span class="badge bg-warning text-dark shadow-sm">Nicht Indexiert</span>
+                                    {% endif %}
+                                </div>
+
+                                <span class="pdf-icon {% if not file.indexed %}opacity-50{% endif %}">📄</span>
+
+                                <h5 class="card-title">{{ file.date }}</h5>
+                                <p class="card-text small text-muted text-truncate mb-1">{{ file.filename }}</p>
+                                <span class="badge bg-light text-dark border">{{ file.size_mb }} MB</span>
+
+                                {% if file.snippet %}
+                                    <div class="snippet mt-2 border-top pt-2">
+                                        "...{{ file.snippet|safe }}..."
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </a>
+                        <div class="card-footer bg-white border-0">
+                            <div class="d-flex gap-2 mb-2">
+                                <a href="{{ url_for('download_file', filename=file.filename) }}#search={{ query }}" target="_blank" class="btn btn-sm {% if file.indexed %}btn-outline-primary{% else %}btn-outline-warning{% endif %} w-100">
+                                    👀 Lesen
+                                </a>
+                                <a href="{{ url_for('download_file', filename=file.filename, dl=1) }}" class="btn btn-sm btn-secondary" title="Herunterladen">
+                                    💾
+                                </a>
+                            </div>
+
+                            {% if admin_user %}
+                            <a href="{{ url_for('compress_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-danger w-100" title="Manuell komprimieren">
+                                ⚡ Komprimieren
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="col-12 text-center text-muted py-5">
+                    <h3>Keine Ausgaben in dieser Woche 🤷‍♂️</h3>
+                    <p>Versuche eine andere Woche über das Menü oder starte einen Download.</p>
+                </div>
+                {% endfor %}
+            </div>
         </div>
     </div>
 
-    <!-- Archiv Modal (für Admin) -->
+    <!-- Hidden Footer mit Logout -->
+    <footer class="text-center py-4 mt-auto text-muted small">
+        <div class="container">
+            <hr class="opacity-25">
+            <span class="opacity-50">&copy; 2026 WZ Archiv</span>
+            <!-- Das versteckte Pi -->
+            <a href="{{ url_for('logout') }}" class="text-decoration-none text-muted ms-2 opacity-25" title="Logout" style="font-family: serif;">&pi;</a>
+        </div>
+    </footer>
+
     {% if admin_user %}
     <div class="modal fade" id="archiveModal" tabindex="-1">
         <div class="modal-dialog">
