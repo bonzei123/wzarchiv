@@ -16,7 +16,7 @@ from selenium.common import exceptions
 from discord_webhook import DiscordWebhook
 from dotenv import load_dotenv
 
-# Kompressor Import
+# Kompressor Import (wird hier nicht mehr automatisch genutzt, aber import bleibt falls benötigt)
 try:
     from compressor import compress_pdf
 except ImportError:
@@ -88,7 +88,7 @@ class ZeitungScraper:
         # Anti-Stuck Settings
         options.add_argument('--disable-extensions')
         options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-features=DownloadBubble')  # Wichtig für Headless!
+        options.add_argument('--disable-features=DownloadBubble')
         options.add_argument('--window-size=1920,1080')
 
         if SITE_CONFIG["proxy"]:
@@ -159,19 +159,12 @@ class ZeitungScraper:
         return set(base_dir.glob("*.pdf"))
 
     def cleanup_failed_attempts(self, filename_base):
-        """
-        Löscht 0-Byte Dateien und Duplikate (filename (1).pdf) nach Fehlversuch.
-        """
-        # Muster wie '2026-02-01_Wormser_Zeitung*'
         pattern = f"{filename_base.replace('.pdf', '')}*"
-
         for f in base_dir.glob(pattern):
             try:
-                # Lösche alles was 0 Bytes hat
                 if f.stat().st_size == 0:
                     logger.warning(f"Lösche defekte 0-Byte Datei: {f.name}")
                     os.remove(f)
-                # Lösche Duplikate mit Klammern (1)
                 elif re.search(r'\(\d+\)\.pdf$', f.name):
                     logger.warning(f"Lösche Duplikat: {f.name}")
                     os.remove(f)
@@ -181,7 +174,6 @@ class ZeitungScraper:
     def wait_for_download(self, filename_to_save, pre_existing_files):
         logger.info(f"Warte auf NEUEN Download für: {filename_to_save}")
 
-        # Temp files löschen
         for temp in base_dir.glob("*.crdownload"):
             try:
                 os.remove(temp)
@@ -190,8 +182,7 @@ class ZeitungScraper:
 
         end_time = time.time() + 180
         target_file = base_dir / filename_to_save
-
-        stuck_counter = 0  # Zähler für 0-Byte Status
+        stuck_counter = 0
 
         while time.time() < end_time:
             current_files = set(base_dir.glob("*.pdf"))
@@ -201,31 +192,27 @@ class ZeitungScraper:
             if new_files:
                 candidate = list(new_files)[0]
 
-                # Check 1: Noch im Download?
                 if any(t.name.startswith(candidate.name) for t in temp_files):
                     time.sleep(1)
                     continue
 
-                # Check 2: 0 Byte Deadlock Detection
                 try:
                     if candidate.stat().st_size == 0:
                         stuck_counter += 1
-                        if stuck_counter > 30:  # 30 Sekunden lang 0 Bytes -> Abbruch
+                        if stuck_counter > 30:
                             logger.error(f"Download hängt bei 0 Bytes: {candidate.name}. Breche ab.")
                             try:
                                 os.remove(candidate)
                             except:
                                 pass
                             return None
-
                         time.sleep(1)
                         continue
                     else:
-                        stuck_counter = 0  # Reset wenn Daten fließen
+                        stuck_counter = 0
                 except OSError:
                     continue
 
-                    # Check 3: Dateigröße stabil?
                 try:
                     initial_size = candidate.stat().st_size
                     time.sleep(2)
@@ -246,13 +233,13 @@ class ZeitungScraper:
                     try:
                         shutil.move(str(candidate), str(target_file))
                         logger.info(f"Gespeichert als: {filename_to_save}")
-                        compress_pdf(target_file)
+                        # WICHTIG: Auto-Komprimierung hier entfernt!
                         return target_file
                     except Exception as e:
                         logger.error(f"Fehler beim Umbenennen: {e}")
                         return None
                 else:
-                    compress_pdf(target_file)
+                    # WICHTIG: Auto-Komprimierung hier entfernt!
                     return target_file
 
             time.sleep(1)
@@ -281,7 +268,6 @@ class ZeitungScraper:
             filename = f"{today_str}_Wormser_Zeitung.pdf"
             target_path = base_dir / filename
 
-            # Validitäts-Check VOR Start (Muss > 10KB sein)
             if target_path.exists() and target_path.stat().st_size > 10 * 1024:
                 logger.info("Datei existiert bereits und ist valide. Überspringe.")
                 self.logout()
@@ -290,8 +276,6 @@ class ZeitungScraper:
             for attempt in range(1, 4):
                 try:
                     logger.info(f"Versuch {attempt}/3 für Daily Download...")
-
-                    # Cleanup VOR jedem Versuch
                     self.cleanup_failed_attempts(filename)
 
                     s = SITE_CONFIG["selectors"]
@@ -345,8 +329,6 @@ class ZeitungScraper:
 
                 for attempt in range(1, 4):
                     logger.info(f"Versuch {attempt}/3 für {date_str_iso}...")
-
-                    # Cleanup
                     self.cleanup_failed_attempts(target_filename)
 
                     try:

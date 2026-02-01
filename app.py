@@ -1,8 +1,7 @@
 import os
 import threading
 import logging
-import fcntl
-import atexit
+from datetime import datetime, timedelta
 from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
 from flask_basicauth import BasicAuth
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -11,12 +10,20 @@ from dotenv import load_dotenv
 from zeitung import ZeitungScraper, base_dir
 import indexer
 
+# Kompressor für manuelle Ausführung importieren
+try:
+    from compressor import compress_pdf
+except ImportError:
+    def compress_pdf(path):
+        return False
+
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev_key')
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Logger
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -45,12 +52,8 @@ def is_admin():
 process_lock = threading.Lock()
 is_busy = False
 
-# DB Init
 if not os.path.exists('/app/downloads/zeitung.db'):
-    try:
-        indexer.init_db()
-    except Exception as e:
-        logger.error(f"DB Init Fehler: {e}")
+    indexer.init_db()
 else:
     indexer.init_db()
 
@@ -62,30 +65,10 @@ def run_scraper_background():
         logger.info("Starte Scraper...")
         scraper = ZeitungScraper()
         scraper.run()
-
-        # FIX: Prüfen ob target_path gesetzt ist, bevor wir darauf zugreifen
-        # Das verhindert den "NoneType has no attribute exists" Fehler
         if scraper.target_path and scraper.target_path.exists():
             indexer.index_pdf(scraper.target_path)
-        else:
-            logger.warning("Scraper beendet, aber keine Datei zum Indexieren gefunden.")
-
     except Exception as e:
         logger.error(f"Scraper Fehler: {e}")
-    finally:
-        is_busy = False
-        process_lock.release()
-
-
-def run_reindex_background():
-    global is_busy
-    is_busy = True
-    try:
-        logger.info("Starte komplettes Re-Indexing...")
-        indexer.rebuild_index(base_dir)
-        logger.info("Re-Indexing fertig.")
-    except Exception as e:
-        logger.error(f"Reindex Fehler: {e}")
     finally:
         is_busy = False
         process_lock.release()
@@ -99,15 +82,46 @@ def run_archive_background(date_str, range_count):
         scraper = ZeitungScraper()
         new_files = scraper.run_archive(date_str, range_count)
 
-        logger.info(f"Archiv Download fertig. {len(new_files)} Dateien geladen.")
-
         for fpath in new_files:
-            if fpath and fpath.exists():
-                logger.info(f"Indexiere {fpath.name}...")
+            if fpath.exists():
                 indexer.index_pdf(fpath)
 
     except Exception as e:
         logger.error(f"Archiv Fehler: {e}")
+    finally:
+        is_busy = False
+        process_lock.release()
+
+
+def run_reindex_background():
+    global is_busy
+    is_busy = True
+    try:
+        logger.info("Starte Re-Indexing...")
+        indexer.rebuild_index(base_dir)
+    except Exception as e:
+        logger.error(f"Reindex Fehler: {e}")
+    finally:
+        is_busy = False
+        process_lock.release()
+
+
+def run_manual_compression_background(filename):
+    global is_busy
+    is_busy = True
+    try:
+        logger.info(f"Starte manuelle Komprimierung für {filename}...")
+        path = base_dir / filename
+        if path.exists():
+            success = compress_pdf(path)
+            if success:
+                logger.info("Komprimierung erfolgreich.")
+            else:
+                logger.info("Komprimierung brachte keine Verbesserung.")
+        else:
+            logger.error("Datei nicht gefunden.")
+    except Exception as e:
+        logger.error(f"Komprimierung Fehler: {e}")
     finally:
         is_busy = False
         process_lock.release()
@@ -121,45 +135,21 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER (SINGLETON) ---
-# Wir nutzen fcntl um sicherzustellen, dass nur EINER der 4 Worker den Scheduler startet.
-# Sonst starten 4 Downloads gleichzeitig und crashen den Chrome-Treiber.
-
-f = open("scheduler.lock", "wb")
-try:
-    # Versuche exklusiven, nicht-blockierenden Lock zu bekommen
-    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+# --- SCHEDULER ---
+def job_download():
+    logger.info("⏰ 06:00 - Auto-Download gestartet")
+    try_start_process(run_scraper_background)
 
 
-    # WENN ERFOLGREICH: Wir sind der Master-Worker
-    def job_download():
-        logger.info("⏰ 06:00 - Auto-Download gestartet")
-        try_start_process(run_scraper_background)
+def job_reindex():
+    logger.info("⏰ 06:15 - Auto-Reindex gestartet")
+    try_start_process(run_reindex_background)
 
 
-    def job_reindex():
-        logger.info("⏰ 06:15 - Auto-Reindex gestartet")
-        try_start_process(run_reindex_background)
-
-
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(func=job_download, trigger="cron", hour=6, minute=0, id='job_download')
-    scheduler.add_job(func=job_reindex, trigger="cron", hour=6, minute=15, id='job_reindex')
-    scheduler.start()
-    logger.info("✅ Scheduler erfolgreich in diesem Worker gestartet.")
-
-
-    # Cleanup beim Beenden
-    def unlock():
-        fcntl.flock(f, fcntl.LOCK_UN)
-        f.close()
-
-
-    atexit.register(unlock)
-
-except IOError:
-    # Lock fehlgeschlagen -> Ein anderer Worker macht schon den Job
-    logger.info("ℹ️ Scheduler läuft bereits in einem anderen Worker. Überspringe.")
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=job_download, trigger="cron", hour=6, minute=0)
+scheduler.add_job(func=job_reindex, trigger="cron", hour=6, minute=15)
+scheduler.start()
 
 
 # --- ROUTEN ---
@@ -168,17 +158,57 @@ except IOError:
 def index():
     query = request.args.get('q', '').strip()
 
+    # Wochen-Logik
+    # Wenn kein Parameter, nehme aktuelle Woche (ISO Format: 2026-W05)
+    current_iso = datetime.now().isocalendar()
+    current_week_id = f"{current_iso.year}-W{current_iso.week:02d}"
+
+    selected_week = request.args.get('week', current_week_id)
+
+    files = []
+    available_weeks = set()
+
     if query:
+        # Bei Suche ignorieren wir die Wochenansicht und zeigen alles
         files = indexer.search_articles(query)
         flash(f'{len(files)} Treffer für "{query}" gefunden.', 'info')
     else:
-        files = indexer.get_all_files(base_dir)
+        # Alle Dateien laden
+        all_files = indexer.get_all_files(base_dir)
+
+        # 1. Sammle alle verfügbaren Wochen für das Dropdown
+        for f in all_files:
+            available_weeks.add(f['week_id'])
+
+        # 2. Filtere nach ausgewählter Woche
+        files = [f for f in all_files if f['week_id'] == selected_week]
+
+    # Wochen für Dropdown sortieren (Neueste zuerst)
+    sorted_weeks = sorted(list(available_weeks), reverse=True)
+
+    # Vorherige/Nächste Woche berechnen (für Pfeile)
+    try:
+        y, w = map(int, selected_week.split('-W'))
+        # Ein Datum in dieser Woche erzeugen (Montag)
+        d = datetime.fromisocalendar(y, w, 1)
+        prev_d = d - timedelta(days=7)
+        next_d = d + timedelta(days=7)
+
+        prev_week_id = f"{prev_d.isocalendar().year}-W{prev_d.isocalendar().week:02d}"
+        next_week_id = f"{next_d.isocalendar().year}-W{next_d.isocalendar().week:02d}"
+    except:
+        prev_week_id = None
+        next_week_id = None
 
     return render_template('index.html',
                            files=files,
                            query=query,
                            is_scraping=is_busy,
-                           admin_user=is_admin())
+                           admin_user=is_admin(),
+                           selected_week=selected_week,
+                           available_weeks=sorted_weeks,
+                           prev_week=prev_week_id,
+                           next_week=next_week_id)
 
 
 @app.route('/download/<filename>')
@@ -192,10 +222,7 @@ def download_file(filename):
 
 @app.route('/trigger-scrape')
 def trigger_scrape():
-    if not is_admin():
-        flash("Zugriff verweigert.", "danger")
-        return redirect(url_for('index'))
-
+    if not is_admin(): return redirect(url_for('index'))
     if try_start_process(run_scraper_background):
         flash('Download gestartet.', 'info')
     else:
@@ -205,10 +232,7 @@ def trigger_scrape():
 
 @app.route('/reindex')
 def reindex():
-    if not is_admin():
-        flash("Zugriff verweigert.", "danger")
-        return redirect(url_for('index'))
-
+    if not is_admin(): return redirect(url_for('index'))
     if try_start_process(run_reindex_background):
         flash('Re-Indexing gestartet.', 'success')
     else:
@@ -218,25 +242,25 @@ def reindex():
 
 @app.route('/archive-download', methods=['POST'])
 def archive_download():
-    if not is_admin():
-        flash("Nur für Admins.", "danger")
-        return redirect(url_for('index'))
-
+    if not is_admin(): return redirect(url_for('index'))
     date_str = request.form.get('date')
-    try:
-        range_val = int(request.form.get('range', 1))
-    except:
-        range_val = 1
-
-    if not date_str:
-        flash("Bitte ein Datum wählen.", "warning")
-        return redirect(url_for('index'))
-
+    range_val = int(request.form.get('range', 1))
     if try_start_process(run_archive_background, date_str, range_val):
-        flash(f'Archiv-Download für {date_str} (+{range_val - 1} Tage) gestartet.', 'success')
+        flash(f'Archiv-Download gestartet.', 'success')
     else:
         flash('System beschäftigt.', 'warning')
+    return redirect(url_for('index'))
 
+
+# NEU: Manuelle Komprimierung
+@app.route('/compress/<filename>')
+def compress_file_route(filename):
+    if not is_admin(): return redirect(url_for('index'))
+
+    if try_start_process(run_manual_compression_background, filename):
+        flash(f'Komprimierung für {filename} gestartet. Prüfe Logs für Ergebnis.', 'info')
+    else:
+        flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
 
 
