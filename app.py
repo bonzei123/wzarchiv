@@ -4,14 +4,15 @@ import logging
 import fcntl
 import atexit
 from datetime import datetime, timedelta
-from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request, Response
-from flask_basicauth import BasicAuth
+from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 from zeitung import ZeitungScraper, base_dir
 import indexer
 
+# Kompressor Import
 try:
     from compressor import compress_pdf
 except ImportError:
@@ -26,32 +27,32 @@ app.secret_key = os.getenv('SECRET_KEY', 'dev_key')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# --- AUTH SYSTEM ---
-class MultiUserAuth(BasicAuth):
-    def check_credentials(self, username, password):
-        if username == os.getenv('WEB_USER_ADMIN') and password == os.getenv('WEB_PASS_ADMIN'):
-            return True
-        if username == os.getenv('WEB_USER_GUEST') and password == os.getenv('WEB_PASS_GUEST'):
-            return True
-        return False
+# --- FLASK LOGIN SETUP ---
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = 'Bitte erst anmelden.'
+login_manager.login_message_category = 'warning'
 
 
-app.config['BASIC_AUTH_FORCE'] = True
-basic_auth = MultiUserAuth(app)
+class User(UserMixin):
+    def __init__(self, id):
+        self.id = id
+        self.is_admin = (id == 'admin')
 
 
-def is_admin():
-    auth = request.authorization
-    if not auth or not auth.username:
-        return False
-    return auth.username == os.getenv('WEB_USER_ADMIN')
+@login_manager.user_loader
+def load_user(user_id):
+    if user_id in ['admin', 'guest']:
+        return User(user_id)
+    return None
 
 
 # --- HINTERGRUND PROZESSE ---
 process_lock = threading.Lock()
 is_busy = False
 
+# DB Init beim Start
 if not os.path.exists('/app/downloads/zeitung.db'):
     indexer.init_db()
 else:
@@ -85,7 +86,6 @@ def run_archive_background(date_str, range_count):
         for fpath in new_files:
             if fpath.exists():
                 indexer.index_pdf(fpath)
-
     except Exception as e:
         logger.error(f"Archiv Fehler: {e}")
     finally:
@@ -135,7 +135,7 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER ---
+# --- SCHEDULER (MIT LOCK) ---
 def job_download():
     logger.info("⏰ 06:00 - Auto-Download gestartet")
     try_start_process(run_scraper_background)
@@ -171,9 +171,44 @@ def start_scheduler():
 start_scheduler()
 
 
-# --- ROUTEN ---
+# --- LOGIN ROUTEN ---
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        # Check Admin
+        if username == os.getenv('WEB_USER_ADMIN') and password == os.getenv('WEB_PASS_ADMIN'):
+            login_user(User('admin'))
+            return redirect(url_for('index'))
+
+        # Check Gast
+        if username == os.getenv('WEB_USER_GUEST') and password == os.getenv('WEB_PASS_GUEST'):
+            login_user(User('guest'))
+            return redirect(url_for('index'))
+
+        flash('Ungültige Zugangsdaten', 'danger')
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('Erfolgreich abgemeldet.', 'info')
+    return redirect(url_for('login'))
+
+
+# --- HAUPT ROUTEN ---
 
 @app.route('/')
+@login_required
 def index():
     query = request.args.get('q', '').strip()
 
@@ -211,7 +246,6 @@ def index():
                            files=files,
                            query=query,
                            is_scraping=is_busy,
-                           admin_user=is_admin(),
                            selected_week=selected_week,
                            available_weeks=sorted_weeks,
                            prev_week=prev_week_id,
@@ -219,6 +253,7 @@ def index():
 
 
 @app.route('/download/<filename>')
+@login_required
 def download_file(filename):
     force_download = request.args.get('dl') == '1'
     response = send_from_directory(base_dir, filename, as_attachment=force_download)
@@ -227,11 +262,9 @@ def download_file(filename):
     return response
 
 
-# NEU: Route für Thumbnails
 @app.route('/thumbnail/<filename>')
+@login_required
 def thumbnail_file(filename):
-    # Der Dateiname kommt als 'datum_name.pdf', wir suchen 'datum_name.jpg'
-    # .stem gibt den Namen ohne Endung
     name_no_ext = os.path.splitext(filename)[0]
     jpg_name = f"{name_no_ext}.jpg"
     thumb_dir = base_dir / 'thumbnails'
@@ -239,8 +272,9 @@ def thumbnail_file(filename):
 
 
 @app.route('/trigger-scrape')
+@login_required
 def trigger_scrape():
-    if not is_admin(): return redirect(url_for('index'))
+    if not current_user.is_admin: return redirect(url_for('index'))
     if try_start_process(run_scraper_background):
         flash('Download gestartet.', 'info')
     else:
@@ -249,18 +283,20 @@ def trigger_scrape():
 
 
 @app.route('/reindex')
+@login_required
 def reindex():
-    if not is_admin(): return redirect(url_for('index'))
+    if not current_user.is_admin: return redirect(url_for('index'))
     if try_start_process(run_reindex_background):
-        flash('Re-Indexing gestartet. Thumbnails werden erstellt...', 'success')
+        flash('Re-Indexing gestartet.', 'success')
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
 
 
 @app.route('/archive-download', methods=['POST'])
+@login_required
 def archive_download():
-    if not is_admin(): return redirect(url_for('index'))
+    if not current_user.is_admin: return redirect(url_for('index'))
     date_str = request.form.get('date')
     range_val = int(request.form.get('range', 1))
     if try_start_process(run_archive_background, date_str, range_val):
@@ -271,22 +307,14 @@ def archive_download():
 
 
 @app.route('/compress/<filename>')
+@login_required
 def compress_file_route(filename):
-    if not is_admin(): return redirect(url_for('index'))
+    if not current_user.is_admin: return redirect(url_for('index'))
     if try_start_process(run_manual_compression_background, filename):
-        flash(f'Komprimierung für {filename} gestartet. Prüfe Logs für Ergebnis.', 'info')
+        flash(f'Komprimierung für {filename} gestartet.', 'info')
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
-
-
-@app.route('/logout')
-def logout():
-    return Response(
-        'Erfolgreich ausgeloggt. <a href="/">Neu einloggen</a>',
-        401,
-        {'WWW-Authenticate': 'Basic realm="Login Required"'}
-    )
 
 
 if __name__ == '__main__':

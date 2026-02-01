@@ -75,7 +75,8 @@
 
         <div class="container mb-5">
             <!-- Buttons & Status (NUR FÜR ADMINS SICHTBAR) -->
-            {% if admin_user %}
+            <!-- Zugriff über current_user.is_admin aus Flask-Login -->
+            {% if current_user.is_authenticated and current_user.is_admin %}
             <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-white rounded shadow-sm border">
                 <div class="d-flex align-items-center gap-3">
                     <strong>Admin Konsole:</strong>
@@ -145,7 +146,7 @@
                                     <img src="{{ url_for('thumbnail_file', filename=file.filename) }}"
                                          class="thumb-img"
                                          alt="Vorschau"
-                                         onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZGMzNTQ1IiBzdHJva2Utd2lkdGg9IjEiPjxwYXRoIGQ9Ik0xNCAySDZhhTIgMiAwIDAgMC0yIDJ2MTZhMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwIDIgMmgyYSYgMiAwIDAgMCAwLTJWLTh6Ii8+PHBvbHlsaW5lIHBvaW50cz0iMTQgMiAxNCA4IDIwIDgiLz48L3N2Zz4='; this.style.objectFit='contain'; this.style.padding='20px';">
+                                         onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZGMzNTQ1IiBzdHJva2Utd2lkdGg9IjEiPjxwYXRoIGQ9Ik0xNCAySDZhhTIgMiAwIDAgMC0yIDJ2MTZhMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwLTJWLTh6Ii8+PHBvbHlsaW5lIHBvaW50cz0iMTQgMiAxNCA4IDIwIDgiLz48L3N2Zz4='; this.style.objectFit='contain'; this.style.padding='20px';">
                                 </div>
 
                                 <h5 class="card-title mt-3">{{ file.date_display }}</h5>
@@ -169,7 +170,7 @@
                                 </a>
                             </div>
 
-                            {% if admin_user %}
+                            {% if current_user.is_authenticated and current_user.is_admin %}
                             <a href="{{ url_for('compress_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-danger w-100" title="Manuell komprimieren">
                                 ⚡ Komprimieren
                             </a>
@@ -187,16 +188,17 @@
         </div>
     </div>
 
-    <!-- Hidden Footer mit Logout -->
+    <!-- Footer mit Logout -->
     <footer class="text-center py-4 mt-auto text-muted small">
         <div class="container">
             <hr class="opacity-25">
             <span class="opacity-50">&copy; 2026 WZ Archiv</span>
-            <a href="{{ url_for('logout') }}" class="text-decoration-none text-muted ms-2 opacity-25" title="Logout" style="font-family: serif;">&pi;</a>
+            <span class="mx-2">|</span>
+            <a href="{{ url_for('logout') }}" class="text-decoration-none text-muted">Abmelden</a>
         </div>
     </footer>
 
-    {% if admin_user %}
+    {% if current_user.is_authenticated and current_user.is_admin %}
     <div class="modal fade" id="archiveModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
