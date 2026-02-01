@@ -27,26 +27,42 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            cursor: zoom-in; /* Zeigt an, dass man klicken kann */
         }
 
         .thumb-img {
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Schneidet Ränder ab, füllt Box */
-            object-position: top center; /* Fokus auf den Titel */
-            transition: transform 0.3s ease, z-index 0s 0.3s; /* Delay z-index reset */
+            object-fit: cover;
+            object-position: top center;
+            /* Wichtig: Transition für Zoom muss schnell sein oder aus, sonst "laggt" die Mausbewegung */
+            transition: transform 0.1s ease-out;
+            will-change: transform, transform-origin;
         }
 
-        /* Der Zoom Effekt */
-        .thumb-container:hover .thumb-img {
-            transform: scale(2.0) translateY(10%); /* Zoom rein */
+        /* Modal Bild Styles */
+        #previewImage {
+            max-height: 85vh;
+            width: auto;
+            max-width: 100%;
+            object-fit: contain;
+        }
+        .modal-body-preview {
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+        }
+        .modal-header-preview {
+            border-bottom: none;
             position: absolute;
-            z-index: 100;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            border-radius: 4px;
-            object-fit: contain; /* Zeige ganzes Bild beim Hover */
-            background-color: white;
-            min-height: 300px;
+            right: 0;
+            z-index: 1056;
+            padding: 1rem;
+        }
+        .btn-close-white {
+            filter: invert(1) grayscale(100%) brightness(200%);
         }
     </style>
 </head>
@@ -132,41 +148,46 @@
                 {% for file in files %}
                 <div class="col">
                     <div class="card h-100 p-3 text-center {% if not file.indexed %}border-warning{% endif %}">
-                        <a href="{{ url_for('download_file', filename=file.filename, search=query) }}" target="_blank" class="text-decoration-none text-dark">
-                            <div class="card-body">
+                        <div class="card-body">
 
-                                <div class="position-absolute top-0 end-0 m-2" style="z-index: 20;">
-                                    {% if not file.indexed %}
-                                        <span class="badge bg-warning text-dark shadow-sm">Nicht Indexiert</span>
-                                    {% endif %}
-                                </div>
-
-                                <!-- Thumbnail Bereich -->
-                                <div class="thumb-container">
-                                    <img src="{{ url_for('thumbnail_file', filename=file.filename) }}"
-                                         class="thumb-img"
-                                         alt="Vorschau"
-                                         onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZGMzNTQ1IiBzdHJva2Utd2lkdGg9IjEiPjxwYXRoIGQ9Ik0xNCAySDZhhTIgMiAwIDAgMC0yIDJ2MTZhMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwLTJWLTh6Ii8+PHBvbHlsaW5lIHBvaW50cz0iMTQgMiAxNCA4IDIwIDgiLz48L3N2Zz4='; this.style.objectFit='contain'; this.style.padding='20px';">
-                                </div>
-
-                                <h5 class="card-title mt-3">{{ file.date_display }}</h5>
-                                <p class="card-text small text-muted text-truncate mb-1">{{ file.filename }}</p>
-                                <span class="badge bg-light text-dark border">{{ file.size_mb }} MB</span>
-
-                                {% if file.snippet %}
-                                    <div class="snippet mt-2 border-top pt-2">
-                                        "...{{ file.snippet|safe }}..."
-                                    </div>
+                            <div class="position-absolute top-0 end-0 m-2" style="z-index: 20;">
+                                {% if not file.indexed %}
+                                    <span class="badge bg-warning text-dark shadow-sm">Nicht Indexiert</span>
                                 {% endif %}
                             </div>
-                        </a>
+
+                            <!-- Thumbnail Bereich: Klick öffnet Modal -->
+                            <div class="thumb-container" onclick="openPreviewModal('{{ url_for('thumbnail_file', filename=file.filename) }}', '{{ file.date_display }}')">
+                                <img src="{{ url_for('thumbnail_file', filename=file.filename) }}"
+                                     class="thumb-img"
+                                     alt="Vorschau"
+                                     onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZGMzNTQ1IiBzdHJva2Utd2lkdGg9IjEiPjxwYXRoIGQ9Ik0xNCAySDZhhTIgMiAwIDAgMC0yIDJ2MTZhMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwIDIgMmgyYSYgMiAwIDAgMCAwLTJWLTh6Ii8+PHBvbHlsaW5lIHBvaW50cz0iMTQgMiAxNCA4IDIwIDgiLz48L3N2Zz4='; this.style.objectFit='contain'; this.style.padding='20px';">
+                            </div>
+
+                            <!-- Titel ist Link zum PDF -->
+                            <h5 class="card-title mt-3">
+                                <a href="{{ url_for('download_file', filename=file.filename, search=query) }}" target="_blank" class="text-decoration-none text-dark hover-underline">
+                                    {{ file.date_display }}
+                                </a>
+                            </h5>
+                            <p class="card-text small text-muted text-truncate mb-1">{{ file.filename }}</p>
+                            <span class="badge bg-light text-dark border">{{ file.size_mb }} MB</span>
+
+                            {% if file.snippet %}
+                                <div class="snippet mt-2 border-top pt-2">
+                                    "...{{ file.snippet|safe }}..."
+                                </div>
+                            {% endif %}
+                        </div>
+
                         <div class="card-footer bg-white border-0">
+                            <!-- Buttons gleich groß mit flex-grow-1 -->
                             <div class="d-flex gap-2 mb-2">
-                                <a href="{{ url_for('download_file', filename=file.filename) }}#search={{ query }}" target="_blank" class="btn btn-sm {% if file.indexed %}btn-outline-primary{% else %}btn-outline-warning{% endif %} w-100">
+                                <a href="{{ url_for('download_file', filename=file.filename) }}#search={{ query }}" target="_blank" class="btn btn-sm {% if file.indexed %}btn-outline-primary{% else %}btn-outline-warning{% endif %} flex-grow-1">
                                     👀 Lesen
                                 </a>
-                                <a href="{{ url_for('download_file', filename=file.filename, dl=1) }}" class="btn btn-sm btn-secondary" title="Herunterladen">
-                                    💾
+                                <a href="{{ url_for('download_file', filename=file.filename, dl=1) }}" class="btn btn-sm btn-secondary flex-grow-1" title="Herunterladen">
+                                    💾 Download
                                 </a>
                             </div>
 
@@ -198,6 +219,7 @@
         </div>
     </footer>
 
+    <!-- Archiv Modal (für Admin) -->
     {% if current_user.is_authenticated and current_user.is_admin %}
     <div class="modal fade" id="archiveModal" tabindex="-1">
         <div class="modal-dialog">
@@ -236,6 +258,56 @@
     </div>
     {% endif %}
 
+    <!-- Image Preview Modal -->
+    <div class="modal fade" id="imageModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl"> <!-- Extra Large Modal -->
+            <div class="modal-content bg-dark">
+                <div class="modal-header modal-header-preview">
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body modal-body-preview">
+                    <img src="" id="previewImage" alt="Vorschau Groß">
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Logik für den Zoom-Effekt beim Hover (Fliegen über das Bild)
+        document.querySelectorAll('.thumb-container').forEach(container => {
+            const img = container.querySelector('.thumb-img');
+
+            container.addEventListener('mousemove', (e) => {
+                const rect = container.getBoundingClientRect();
+                // Mausposition relativ zum Container in Prozent (0-100)
+                const x = ((e.clientX - rect.left) / rect.width) * 100;
+                const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+                // Setze den Zoom-Fokus auf die Mausposition
+                img.style.transformOrigin = `${x}% ${y}%`;
+                img.style.transform = 'scale(2.5)'; // Zoom-Faktor
+            });
+
+            container.addEventListener('mouseleave', () => {
+                // Reset beim Verlassen
+                img.style.transform = 'scale(1)';
+                // Kurze Verzögerung für origin, damit der Zoom-Out smooth ist
+                setTimeout(() => {
+                    img.style.transformOrigin = 'center center';
+                }, 100);
+            });
+        });
+
+        // Logik für das Modal
+        function openPreviewModal(imgSrc, title) {
+            const modalElement = document.getElementById('imageModal');
+            const previewImg = document.getElementById('previewImage');
+
+            previewImg.src = imgSrc;
+            const modal = new bootstrap.Modal(modalElement);
+            modal.show();
+        }
+    </script>
 </body>
 </html>
