@@ -1,6 +1,8 @@
 import os
 import threading
 import logging
+import fcntl  # NEU: Für File-Locking
+import atexit  # NEU: Zum Aufräumen
 from datetime import datetime, timedelta
 from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
 from flask_basicauth import BasicAuth
@@ -135,7 +137,7 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER ---
+# --- SCHEDULER (MIT LOCK FÜR GUNICORN) ---
 def job_download():
     logger.info("⏰ 06:00 - Auto-Download gestartet")
     try_start_process(run_scraper_background)
@@ -146,10 +148,39 @@ def job_reindex():
     try_start_process(run_reindex_background)
 
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=job_download, trigger="cron", hour=6, minute=0)
-scheduler.add_job(func=job_reindex, trigger="cron", hour=6, minute=15)
-scheduler.start()
+def start_scheduler():
+    """Startet den Scheduler nur EINMAL, auch bei mehreren Workern"""
+    try:
+        # Wir versuchen eine Lock-Datei zu erstellen und exklusiv zu sperren
+        # O_CREAT | O_WRONLY sorgt dafür, dass die Datei erstellt wird, falls nicht da
+        lock_file = open("scheduler.lock", "w")
+
+        # LOCK_EX: Exklusiver Lock
+        # LOCK_NB: Non-Blocking (wirft Fehler, wenn schon gesperrt)
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        # Wenn wir hier sind, haben wir den Lock!
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(func=job_download, trigger="cron", hour=6, minute=0)
+        scheduler.add_job(func=job_reindex, trigger="cron", hour=6, minute=15)
+        scheduler.start()
+
+        logger.info("✅ Scheduler erfolgreich in diesem Worker gestartet (Lock erhalten).")
+
+        # Beim Beenden des Programms Lock freigeben
+        def unlock():
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+
+        atexit.register(unlock)
+
+    except IOError:
+        # Lock konnte nicht erhalten werden -> Scheduler läuft schon woanders
+        logger.info("ℹ️ Scheduler läuft bereits in einem anderen Worker. Überspringe.")
+
+
+# Scheduler initialisieren
+start_scheduler()
 
 
 # --- ROUTEN ---
@@ -158,8 +189,6 @@ scheduler.start()
 def index():
     query = request.args.get('q', '').strip()
 
-    # Wochen-Logik
-    # Wenn kein Parameter, nehme aktuelle Woche (ISO Format: 2026-W05)
     current_iso = datetime.now().isocalendar()
     current_week_id = f"{current_iso.year}-W{current_iso.week:02d}"
 
@@ -169,31 +198,21 @@ def index():
     available_weeks = set()
 
     if query:
-        # Bei Suche ignorieren wir die Wochenansicht und zeigen alles
         files = indexer.search_articles(query)
         flash(f'{len(files)} Treffer für "{query}" gefunden.', 'info')
     else:
-        # Alle Dateien laden
         all_files = indexer.get_all_files(base_dir)
-
-        # 1. Sammle alle verfügbaren Wochen für das Dropdown
         for f in all_files:
             available_weeks.add(f['week_id'])
-
-        # 2. Filtere nach ausgewählter Woche
         files = [f for f in all_files if f['week_id'] == selected_week]
 
-    # Wochen für Dropdown sortieren (Neueste zuerst)
     sorted_weeks = sorted(list(available_weeks), reverse=True)
 
-    # Vorherige/Nächste Woche berechnen (für Pfeile)
     try:
         y, w = map(int, selected_week.split('-W'))
-        # Ein Datum in dieser Woche erzeugen (Montag)
         d = datetime.fromisocalendar(y, w, 1)
         prev_d = d - timedelta(days=7)
         next_d = d + timedelta(days=7)
-
         prev_week_id = f"{prev_d.isocalendar().year}-W{prev_d.isocalendar().week:02d}"
         next_week_id = f"{next_d.isocalendar().year}-W{next_d.isocalendar().week:02d}"
     except:
@@ -252,11 +271,9 @@ def archive_download():
     return redirect(url_for('index'))
 
 
-# NEU: Manuelle Komprimierung
 @app.route('/compress/<filename>')
 def compress_file_route(filename):
     if not is_admin(): return redirect(url_for('index'))
-
     if try_start_process(run_manual_compression_background, filename):
         flash(f'Komprimierung für {filename} gestartet. Prüfe Logs für Ergebnis.', 'info')
     else:
