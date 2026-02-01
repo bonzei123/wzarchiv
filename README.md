@@ -38,8 +38,8 @@ Erstelle eine Datei namens .env und fülle sie mit deinen Daten:
 
 ```code
 # --- VRM / E-Paper Login ---
-# Die URL zur Dashboard-Ansicht (Region E120 = Worms)
-PAPER_URL=[https://vrm-epaper.de/dashboard.act?region=E120](https://vrm-epaper.de/dashboard.act?region=E120)
+# Die URL zur Dashboard-Ansicht
+PAPER_URL=epaper.url
 PAPER_USER=deine_email@provider.de
 PAPER_PASS=dein_epaper_passwort
 
