@@ -8,13 +8,46 @@
     <style>
         body { background-color: #f0f2f5; display: flex; flex-direction: column; min-height: 100vh; }
         .main-content { flex: 1; }
-        .card { transition: transform 0.2s; border: none; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        .card { transition: transform 0.2s; border: none; box-shadow: 0 2px 5px rgba(0,0,0,0.05); overflow: visible; }
+        .card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); z-index: 10; }
         .pdf-icon { font-size: 3rem; color: #dc3545; display: block; margin-bottom: 10px; }
         mark { background-color: #ffeba7; padding: 0 2px; border-radius: 2px; }
         .snippet { font-size: 0.85rem; color: #666; font-style: italic; }
         .header-bg { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 40px 0; margin-bottom: 30px; }
         .nav-week { font-weight: bold; font-size: 1.2rem; }
+
+        /* Thumbnail Styles */
+        .thumb-container {
+            height: 250px;
+            overflow: hidden;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            position: relative;
+            background-color: #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .thumb-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Schneidet Ränder ab, füllt Box */
+            object-position: top center; /* Fokus auf den Titel */
+            transition: transform 0.3s ease, z-index 0s 0.3s; /* Delay z-index reset */
+        }
+
+        /* Der Zoom Effekt */
+        .thumb-container:hover .thumb-img {
+            transform: scale(2.0) translateY(10%); /* Zoom rein */
+            position: absolute;
+            z-index: 100;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            object-fit: contain; /* Zeige ganzes Bild beim Hover */
+            background-color: white;
+            min-height: 300px;
+        }
     </style>
 </head>
 <body>
@@ -57,7 +90,7 @@
                     <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#archiveModal">
                         📅 Archiv Suche
                     </button>
-                    <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen?')">📑 Index neu bauen</a>
+                    <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen und Thumbnails generieren? Das kann dauern.')">📑 Index neu bauen</a>
                 </div>
             </div>
             {% endif %}
@@ -101,15 +134,21 @@
                         <a href="{{ url_for('download_file', filename=file.filename, search=query) }}" target="_blank" class="text-decoration-none text-dark">
                             <div class="card-body">
 
-                                <div class="position-absolute top-0 end-0 m-2">
+                                <div class="position-absolute top-0 end-0 m-2" style="z-index: 20;">
                                     {% if not file.indexed %}
                                         <span class="badge bg-warning text-dark shadow-sm">Nicht Indexiert</span>
                                     {% endif %}
                                 </div>
 
-                                <span class="pdf-icon {% if not file.indexed %}opacity-50{% endif %}">📄</span>
+                                <!-- Thumbnail Bereich -->
+                                <div class="thumb-container">
+                                    <img src="{{ url_for('thumbnail_file', filename=file.filename) }}"
+                                         class="thumb-img"
+                                         alt="Vorschau"
+                                         onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZGMzNTQ1IiBzdHJva2Utd2lkdGg9IjEiPjxwYXRoIGQ9Ik0xNCAySDZhhTIgMiAwIDAgMC0yIDJ2MTZhMiAyIDAgMCAwIDIgMmgyYSYgMiAyIDAgMCAwIDIgMmgyYSYgMiAwIDAgMCAwLTJWLTh6Ii8+PHBvbHlsaW5lIHBvaW50cz0iMTQgMiAxNCA4IDIwIDgiLz48L3N2Zz4='; this.style.objectFit='contain'; this.style.padding='20px';">
+                                </div>
 
-                                <h5 class="card-title">{{ file.date }}</h5>
+                                <h5 class="card-title mt-3">{{ file.date_display }}</h5>
                                 <p class="card-text small text-muted text-truncate mb-1">{{ file.filename }}</p>
                                 <span class="badge bg-light text-dark border">{{ file.size_mb }} MB</span>
 
@@ -153,7 +192,6 @@
         <div class="container">
             <hr class="opacity-25">
             <span class="opacity-50">&copy; 2026 WZ Archiv</span>
-            <!-- Das versteckte Pi -->
             <a href="{{ url_for('logout') }}" class="text-decoration-none text-muted ms-2 opacity-25" title="Logout" style="font-family: serif;">&pi;</a>
         </div>
     </footer>

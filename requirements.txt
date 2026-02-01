@@ -7,3 +7,4 @@ APScheduler
 Flask-BasicAuth
 gunicorn
 pypdf
+pdf2image

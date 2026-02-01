@@ -227,6 +227,17 @@ def download_file(filename):
     return response
 
 
+# NEU: Route für Thumbnails
+@app.route('/thumbnail/<filename>')
+def thumbnail_file(filename):
+    # Der Dateiname kommt als 'datum_name.pdf', wir suchen 'datum_name.jpg'
+    # .stem gibt den Namen ohne Endung
+    name_no_ext = os.path.splitext(filename)[0]
+    jpg_name = f"{name_no_ext}.jpg"
+    thumb_dir = base_dir / 'thumbnails'
+    return send_from_directory(thumb_dir, jpg_name)
+
+
 @app.route('/trigger-scrape')
 def trigger_scrape():
     if not is_admin(): return redirect(url_for('index'))
@@ -241,7 +252,7 @@ def trigger_scrape():
 def reindex():
     if not is_admin(): return redirect(url_for('index'))
     if try_start_process(run_reindex_background):
-        flash('Re-Indexing gestartet.', 'success')
+        flash('Re-Indexing gestartet. Thumbnails werden erstellt...', 'success')
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
@@ -269,12 +280,8 @@ def compress_file_route(filename):
     return redirect(url_for('index'))
 
 
-# NEU: Logout Route
 @app.route('/logout')
 def logout():
-    # Wir senden einen 401 Fehler. Browser reagieren darauf meist mit dem Löschen
-    # der gecachten Zugangsdaten und zeigen das Login-Fenster erneut an.
-    # Wenn man dort "Abbrechen" klickt, sieht man diese Nachricht.
     return Response(
         'Erfolgreich ausgeloggt. <a href="/">Neu einloggen</a>',
         401,

@@ -1,9 +1,12 @@
+# Wir nutzen ein stabiles Base Image
 FROM python:3.10-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV RUNNING_IN_DOCKER=true
 
+# 1. System-Abhängigkeiten installieren
+# NEU: poppler-utils für PDF-zu-Bild Konvertierung
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -12,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     make \
     gcc \
     ghostscript \
+    poppler-utils \
     libglib2.0-0 \
     libnss3 \
     libfontconfig1 \
@@ -37,8 +41,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # 4. Code kopieren
 COPY . .
 
-# Ordner für Downloads erstellen
-RUN mkdir -p /app/downloads
+# Ordner erstellen
+RUN mkdir -p /app/downloads/thumbnails
 
 # Startbefehl (Gunicorn)
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "--timeout", "120", "app:app"]
