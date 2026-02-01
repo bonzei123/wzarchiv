@@ -6,6 +6,7 @@ import subprocess
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+import glob
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -15,11 +16,10 @@ from selenium.common import exceptions
 from discord_webhook import DiscordWebhook
 from dotenv import load_dotenv
 
-# NEU: Importiere den Kompressor für die PDF-Optimierung
+# Kompressor Import
 try:
     from compressor import compress_pdf
 except ImportError:
-    # Fallback, falls die Datei lokal beim Testen fehlt
     def compress_pdf(path):
         return False
 
@@ -61,7 +61,6 @@ class ZeitungScraper:
     def __init__(self):
         self.driver = None
         self.wait = None
-        self.current_target_date_str = datetime.today().strftime('%Y-%m-%d')
         self.target_path = None
 
     def get_docker_chrome_version(self):
@@ -84,10 +83,14 @@ class ZeitungScraper:
             options.add_argument('--disable-dev-shm-usage')
             target_version = self.get_docker_chrome_version()
         else:
-            target_version = 131  # Hier ggf. deine lokale Version anpassen
+            target_version = 131
 
+        # Anti-Stuck Settings
         options.add_argument('--disable-extensions')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-features=DownloadBubble')  # Wichtig für Headless!
         options.add_argument('--window-size=1920,1080')
+
         if SITE_CONFIG["proxy"]:
             options.add_argument(f'--proxy-server={SITE_CONFIG["proxy"]}')
 
@@ -96,7 +99,8 @@ class ZeitungScraper:
             'download.prompt_for_download': False,
             'download.directory_upgrade': True,
             'safebrowsing.enabled': True,
-            'plugins.always_open_pdf_externally': True
+            'plugins.always_open_pdf_externally': True,
+            'profile.default_content_settings.popups': 0,
         }
         options.add_experimental_option('prefs', prefs)
 
@@ -120,7 +124,6 @@ class ZeitungScraper:
 
         try:
             WebDriverWait(self.driver, 3).until(EC.presence_of_element_located(s["logout_btn"]))
-            logger.info("Bereits eingeloggt.")
             return
         except:
             pass
@@ -137,49 +140,48 @@ class ZeitungScraper:
         pass_field.send_keys(c["pass"])
 
         self.driver.execute_script("arguments[0].click();", self.driver.find_element(*s["login_submit_btn"]))
-
         self.wait.until(EC.url_contains("vrm-epaper.de"))
 
     def logout(self):
         try:
-            logger.info("Navigiere zum Dashboard für Logout...")
+            logger.info("Führe Logout durch...")
             self.driver.get(SITE_CONFIG["url"])
             time.sleep(2)
-
-            logger.info("Führe Logout durch...")
             s = SITE_CONFIG["selectors"]
-
             logout_btn = self.wait.until(EC.presence_of_element_located(s["logout_btn"]))
             self.driver.execute_script("arguments[0].click();", logout_btn)
-
             time.sleep(2)
             logger.info("Logout erfolgreich.")
         except Exception as e:
             logger.warning(f"Logout nicht möglich: {e}")
 
-    def clean_target_if_broken(self, target_path):
-        """Löscht Datei, falls sie existiert aber leer/zu klein ist."""
-        if target_path.exists():
-            if target_path.stat().st_size < 10 * 1024:
-                logger.warning(f"Datei {target_path.name} existiert, ist aber defekt (<10KB). Lösche sie.")
-                try:
-                    os.remove(target_path)
-                    return False
-                except OSError as e:
-                    logger.error(f"Konnte defekte Datei nicht löschen: {e}")
-                    return True
-            else:
-                return True
-        return False
-
     def get_existing_pdfs(self):
-        """Erstellt einen Snapshot der aktuellen Dateien im Ordner"""
         return set(base_dir.glob("*.pdf"))
 
+    def cleanup_failed_attempts(self, filename_base):
+        """
+        Löscht 0-Byte Dateien und Duplikate (filename (1).pdf) nach Fehlversuch.
+        """
+        # Muster wie '2026-02-01_Wormser_Zeitung*'
+        pattern = f"{filename_base.replace('.pdf', '')}*"
+
+        for f in base_dir.glob(pattern):
+            try:
+                # Lösche alles was 0 Bytes hat
+                if f.stat().st_size == 0:
+                    logger.warning(f"Lösche defekte 0-Byte Datei: {f.name}")
+                    os.remove(f)
+                # Lösche Duplikate mit Klammern (1)
+                elif re.search(r'\(\d+\)\.pdf$', f.name):
+                    logger.warning(f"Lösche Duplikat: {f.name}")
+                    os.remove(f)
+            except Exception as e:
+                logger.error(f"Fehler beim Bereinigen von {f.name}: {e}")
+
     def wait_for_download(self, filename_to_save, pre_existing_files):
-        """Wartet auf eine NEUE Datei, die nicht im Snapshot war"""
         logger.info(f"Warte auf NEUEN Download für: {filename_to_save}")
 
+        # Temp files löschen
         for temp in base_dir.glob("*.crdownload"):
             try:
                 os.remove(temp)
@@ -188,6 +190,8 @@ class ZeitungScraper:
 
         end_time = time.time() + 180
         target_file = base_dir / filename_to_save
+
+        stuck_counter = 0  # Zähler für 0-Byte Status
 
         while time.time() < end_time:
             current_files = set(base_dir.glob("*.pdf"))
@@ -202,11 +206,22 @@ class ZeitungScraper:
                     time.sleep(1)
                     continue
 
-                # Check 2: 0 Byte Deadlock?
+                # Check 2: 0 Byte Deadlock Detection
                 try:
                     if candidate.stat().st_size == 0:
+                        stuck_counter += 1
+                        if stuck_counter > 30:  # 30 Sekunden lang 0 Bytes -> Abbruch
+                            logger.error(f"Download hängt bei 0 Bytes: {candidate.name}. Breche ab.")
+                            try:
+                                os.remove(candidate)
+                            except:
+                                pass
+                            return None
+
                         time.sleep(1)
                         continue
+                    else:
+                        stuck_counter = 0  # Reset wenn Daten fließen
                 except OSError:
                     continue
 
@@ -231,39 +246,31 @@ class ZeitungScraper:
                     try:
                         shutil.move(str(candidate), str(target_file))
                         logger.info(f"Gespeichert als: {filename_to_save}")
-
-                        # --- KOMPRIMIERUNG ---
                         compress_pdf(target_file)
-                        # ---------------------
-
                         return target_file
                     except Exception as e:
                         logger.error(f"Fehler beim Umbenennen: {e}")
                         return None
                 else:
-                    # Auch hier komprimieren, falls der Name zufällig schon stimmte
                     compress_pdf(target_file)
                     return target_file
 
             time.sleep(1)
 
-        logger.warning(f"Timeout! Keine NEUE, valide Datei erhalten für: {filename_to_save}")
+        logger.warning(f"Timeout! Keine valide Datei erhalten.")
         return None
 
     def handle_tabs(self):
         try:
             if len(self.driver.window_handles) > 1:
-                logger.info("Neuer Tab erkannt. Schließe ihn...")
                 main_window = self.driver.window_handles[0]
                 new_window = self.driver.window_handles[1]
-
                 self.driver.switch_to.window(new_window)
                 time.sleep(1)
                 self.driver.close()
-
                 self.driver.switch_to.window(main_window)
-        except Exception as e:
-            logger.warning(f"Tab Handling Fehler: {e}")
+        except:
+            pass
 
     def run_daily(self):
         try:
@@ -274,17 +281,20 @@ class ZeitungScraper:
             filename = f"{today_str}_Wormser_Zeitung.pdf"
             target_path = base_dir / filename
 
-            if self.clean_target_if_broken(target_path):
+            # Validitäts-Check VOR Start (Muss > 10KB sein)
+            if target_path.exists() and target_path.stat().st_size > 10 * 1024:
                 logger.info("Datei existiert bereits und ist valide. Überspringe.")
                 self.logout()
                 return
 
-            # RETRY LOGIK
             for attempt in range(1, 4):
                 try:
                     logger.info(f"Versuch {attempt}/3 für Daily Download...")
-                    s = SITE_CONFIG["selectors"]
 
+                    # Cleanup VOR jedem Versuch
+                    self.cleanup_failed_attempts(filename)
+
+                    s = SITE_CONFIG["selectors"]
                     if attempt > 1:
                         self.driver.refresh()
                         time.sleep(3)
@@ -302,7 +312,7 @@ class ZeitungScraper:
                         self.target_path = saved_path
                         break
                     else:
-                        logger.warning(f"Versuch {attempt} fehlgeschlagen (Timeout).")
+                        logger.warning(f"Versuch {attempt} fehlgeschlagen.")
 
                 except Exception as e:
                     logger.error(f"Fehler bei Versuch {attempt}: {e}")
@@ -329,12 +339,15 @@ class ZeitungScraper:
                 target_filename = f"{date_str_iso}_Wormser_Zeitung.pdf"
                 target_path = base_dir / target_filename
 
-                if self.clean_target_if_broken(target_path):
-                    logger.info(f"Überspringe {date_str_iso}, existiert bereits (Valide).")
+                if target_path.exists() and target_path.stat().st_size > 10 * 1024:
+                    logger.info(f"Überspringe {date_str_iso}, existiert bereits.")
                     continue
 
                 for attempt in range(1, 4):
                     logger.info(f"Versuch {attempt}/3 für {date_str_iso}...")
+
+                    # Cleanup
+                    self.cleanup_failed_attempts(target_filename)
 
                     try:
                         url = f"https://vrm-epaper.de/widgetshelf.act?dateTo={date_str_iso}&widgetId=1020&region=E120"
@@ -342,7 +355,6 @@ class ZeitungScraper:
                         time.sleep(3)
 
                         css_selector = f".pdf-date-{date_str_iso}"
-
                         try:
                             container = self.driver.find_element(By.CSS_SELECTOR, css_selector)
                             link = container.find_element(By.TAG_NAME, "a")
@@ -360,9 +372,7 @@ class ZeitungScraper:
                                 time.sleep(1)
                                 break
                             else:
-                                logger.warning(f"Download Timeout für {date_str_iso}.")
-                                if target_path.exists() and target_path.stat().st_size == 0:
-                                    os.remove(target_path)
+                                logger.warning(f"Download fehlgeschlagen.")
 
                         except exceptions.NoSuchElementException:
                             logger.warning(f"Keine Ausgabe für {date_str_iso} gefunden.")
