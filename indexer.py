@@ -216,3 +216,37 @@ def rebuild_index(base_dir):
     for pdf_file in base_dir.glob("*.pdf"):
         index_pdf(pdf_file)
     remove_orphaned_entries(base_dir)
+
+
+# NEU: Gezieltes Löschen
+def delete_file_data(base_dir, filename):
+    """Löscht PDF, Thumbnail und DB-Eintrag"""
+    pdf_path = base_dir / filename
+    thumb_path = THUMB_DIR / f"{Path(filename).stem}.jpg"
+
+    # 1. Datei löschen
+    if pdf_path.exists():
+        try:
+            os.remove(pdf_path)
+        except Exception as e:
+            logger.error(f"Konnte PDF nicht löschen: {e}")
+
+    # 2. Thumbnail löschen
+    if thumb_path.exists():
+        try:
+            os.remove(thumb_path)
+        except Exception as e:
+            logger.error(f"Konnte Thumbnail nicht löschen: {e}")
+
+    # 3. DB Eintrag löschen
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM articles WHERE filename = ?", (filename,))
+        conn.commit()
+        conn.close()
+        logger.info(f"Alles gelöscht für: {filename}")
+        return True
+    except Exception as e:
+        logger.error(f"DB Löschfehler: {e}")
+        return False

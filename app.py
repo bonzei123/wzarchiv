@@ -165,9 +165,15 @@ def job_reindex():
     try_start_process(run_reindex_background)
 
 
+# Globale Referenz halten, damit GC sie nicht aufräumt
+scheduler_lock_file = None
+
+
 def start_scheduler():
+    global scheduler_lock_file
     try:
         lock_file = open("scheduler.lock", "w")
+        scheduler_lock_file = lock_file  # Referenz halten
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
         scheduler = BackgroundScheduler()
@@ -178,8 +184,11 @@ def start_scheduler():
         logger.info("✅ Scheduler erfolgreich in diesem Worker gestartet (Lock erhalten).")
 
         def unlock():
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-            lock_file.close()
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except:
+                pass
 
         atexit.register(unlock)
 
@@ -201,12 +210,10 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
 
-        # Check Admin
         if username == os.getenv('WEB_USER_ADMIN') and password == os.getenv('WEB_PASS_ADMIN'):
             login_user(User('admin'))
             return redirect(url_for('index'))
 
-        # Check Gast
         if username == os.getenv('WEB_USER_GUEST') and password == os.getenv('WEB_PASS_GUEST'):
             login_user(User('guest'))
             return redirect(url_for('index'))
@@ -225,16 +232,12 @@ def logout():
 
 @app.route('/logout-perform')
 def logout_perform():
-    # Dieser Zwischenschritt hilft gegen Browser, die Basic Auth Daten zu aggressiv cachen
-    # und den User sofort wieder einloggen wollen.
     try:
         ts = int(request.args.get('t', 0))
     except ValueError:
         ts = 0
 
     current_time = time.time()
-
-    # Wenn der Request jünger als 5 Sekunden ist -> Logout erzwingen (401 senden)
     if current_time - ts < 5:
         logout_user()
         return Response(
@@ -242,7 +245,6 @@ def logout_perform():
             401,
             {'WWW-Authenticate': 'Basic realm="Login Required"'}
         )
-
     return redirect(url_for('index'))
 
 
