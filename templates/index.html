@@ -27,26 +27,66 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            cursor: zoom-in;
         }
 
         .thumb-img {
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Schneidet Ränder ab, füllt Box */
-            object-position: top center; /* Fokus auf den Titel */
-            transition: transform 0.3s ease, z-index 0s 0.3s; /* Delay z-index reset */
+            object-fit: cover;
+            object-position: top center;
+            transition: transform 0.1s ease-out; /* Schnelle Reaktion für Maus */
+            will-change: transform, transform-origin;
         }
 
         /* Der Zoom Effekt */
         .thumb-container:hover .thumb-img {
-            transform: scale(2.0) translateY(10%); /* Zoom rein */
+            transform: scale(2.0); /* Zoom rein, Origin wird per JS gesetzt */
             position: absolute;
             z-index: 100;
             box-shadow: 0 10px 30px rgba(0,0,0,0.5);
             border-radius: 4px;
-            object-fit: contain; /* Zeige ganzes Bild beim Hover */
+            object-fit: contain;
             background-color: white;
             min-height: 300px;
+        }
+
+        /* Log Console Style */
+        .log-console {
+            background-color: #1e1e1e;
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 15px;
+            border-radius: 5px;
+            height: 300px;
+            overflow-y: scroll;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+        }
+
+        /* Modal Bild Styles */
+        #previewImage {
+            max-height: 85vh;
+            width: auto;
+            max-width: 100%;
+            object-fit: contain;
+        }
+        .modal-body-preview {
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+        }
+        .modal-header-preview {
+            border-bottom: none;
+            position: absolute;
+            right: 0;
+            z-index: 1056;
+            padding: 1rem;
+        }
+        .btn-close-white {
+            filter: invert(1) grayscale(100%) brightness(200%);
         }
     </style>
 </head>
@@ -75,23 +115,41 @@
 
         <div class="container mb-5">
             <!-- Buttons & Status (NUR FÜR ADMINS SICHTBAR) -->
-            <!-- Zugriff über current_user.is_admin aus Flask-Login -->
             {% if current_user.is_authenticated and current_user.is_admin %}
-            <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-white rounded shadow-sm border">
-                <div class="d-flex align-items-center gap-3">
-                    <strong>Admin Konsole:</strong>
-                    {% if is_scraping %}
-                        <span class="badge bg-secondary">⚙️ System arbeitet...</span>
-                    {% else %}
-                        <span class="badge bg-success">✓ Bereit</span>
-                    {% endif %}
-                </div>
-                <div class="btn-group">
-                    <a href="{{ url_for('trigger_scrape') }}" class="btn btn-primary">⬇️ Heute laden</a>
-                    <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#archiveModal">
-                        📅 Archiv Suche
+            <div class="card mb-4 shadow-sm border">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-3">
+                        <strong>Admin Konsole:</strong>
+                        {% if is_scraping %}
+                            <span class="badge bg-secondary">⚙️ System arbeitet...</span>
+                        {% else %}
+                            <span class="badge bg-success">✓ Bereit</span>
+                        {% endif %}
+                    </div>
+
+                    <!-- Accordion Button für Logs -->
+                    <button class="btn btn-sm btn-dark" type="button" data-bs-toggle="collapse" data-bs-target="#logCollapse" aria-expanded="false" onclick="loadLogs()">
+                        📝 System Logs
                     </button>
-                    <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen und Thumbnails generieren? Das kann dauern.')">📑 Index neu bauen</a>
+                </div>
+
+                <div class="card-body">
+                    <div class="btn-group w-100">
+                        <a href="{{ url_for('trigger_scrape') }}" class="btn btn-primary">⬇️ Heute laden</a>
+                        <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#archiveModal">
+                            📅 Archiv Suche
+                        </button>
+                        <a href="{{ url_for('reindex') }}" class="btn btn-outline-secondary" onclick="return confirm('Alles neu einlesen und Thumbnails generieren? Das kann dauern.')">📑 Index neu bauen</a>
+                    </div>
+
+                    <!-- Log Bereich (versteckt) -->
+                    <div class="collapse mt-3" id="logCollapse">
+                        <div class="d-flex justify-content-between mb-2">
+                            <small class="text-muted">Letzte 100 Zeilen</small>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="loadLogs()">🔄 Aktualisieren</button>
+                        </div>
+                        <div class="log-console" id="logOutput">Lade Logs...</div>
+                    </div>
                 </div>
             </div>
             {% endif %}
@@ -160,6 +218,8 @@
                             {% if file.snippet %}
                                 <div class="snippet mt-2 border-top pt-2">
                                     "...{{ file.snippet|safe }}..."
+                                    <!-- Kleiner Fix für Zeilenumbruch im Snippet -->
+                                    <br>
                                 </div>
                             {% endif %}
                         </div>
@@ -263,6 +323,24 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Log Viewer Logik
+        async function loadLogs() {
+            const consoleDiv = document.getElementById('logOutput');
+            consoleDiv.textContent = "Lade Logs...";
+            try {
+                const response = await fetch('/admin/logs');
+                if (response.ok) {
+                    const text = await response.text();
+                    consoleDiv.textContent = text;
+                    consoleDiv.scrollTop = consoleDiv.scrollHeight; // Auto-Scroll nach unten
+                } else {
+                    consoleDiv.textContent = "Fehler beim Laden der Logs (Status " + response.status + ").";
+                }
+            } catch (e) {
+                consoleDiv.textContent = "Verbindungsfehler: " + e;
+            }
+        }
+
         // Logik für den Zoom-Effekt beim Hover (Fliegen über das Bild)
         document.querySelectorAll('.thumb-container').forEach(container => {
             const img = container.querySelector('.thumb-img');

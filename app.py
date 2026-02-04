@@ -6,7 +6,7 @@ import atexit
 import time
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
-from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request, Response
+from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from zeitung import ZeitungScraper, base_dir
 import indexer
 
+# Kompressor Import
 try:
     from compressor import compress_pdf
 except ImportError:
@@ -46,10 +47,10 @@ if gunicorn_logger.handlers:
 
 logger = logging.getLogger(__name__)
 
-# --- AUTH SYSTEM ---
+# --- AUTH SYSTEM (Flask-Login) ---
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = 'login'
+login_manager.login_view = 'login'  # Wenn nicht eingeloggt, hierhin leiten
 login_manager.login_message = 'Bitte erst anmelden.'
 login_manager.login_message_category = 'warning'
 
@@ -71,6 +72,7 @@ def load_user(user_id):
 process_lock = threading.Lock()
 is_busy = False
 
+# DB Init beim Start
 if not os.path.exists('/app/downloads/zeitung.db'):
     indexer.init_db()
 else:
@@ -104,7 +106,6 @@ def run_archive_background(date_str, range_count):
         for fpath in new_files:
             if fpath.exists():
                 indexer.index_pdf(fpath)
-
     except Exception as e:
         logger.error(f"Archiv Fehler: {e}")
     finally:
@@ -154,7 +155,7 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER ---
+# --- SCHEDULER (MIT LOCK) ---
 def job_download():
     logger.info("⏰ 06:00 - Auto-Download gestartet")
     try_start_process(run_scraper_background)
@@ -165,7 +166,7 @@ def job_reindex():
     try_start_process(run_reindex_background)
 
 
-# Globale Referenz halten, damit GC sie nicht aufräumt
+# Globale Referenz halten
 scheduler_lock_file = None
 
 
@@ -173,7 +174,7 @@ def start_scheduler():
     global scheduler_lock_file
     try:
         lock_file = open("scheduler.lock", "w")
-        scheduler_lock_file = lock_file  # Referenz halten
+        scheduler_lock_file = lock_file
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
         scheduler = BackgroundScheduler()
@@ -210,10 +211,12 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
 
+        # Check Admin
         if username == os.getenv('WEB_USER_ADMIN') and password == os.getenv('WEB_PASS_ADMIN'):
             login_user(User('admin'))
             return redirect(url_for('index'))
 
+        # Check Gast
         if username == os.getenv('WEB_USER_GUEST') and password == os.getenv('WEB_PASS_GUEST'):
             login_user(User('guest'))
             return redirect(url_for('index'))
@@ -226,26 +229,9 @@ def login():
 @app.route('/logout')
 @login_required
 def logout():
-    ts = int(time.time())
-    return redirect(url_for('logout_perform', t=ts))
-
-
-@app.route('/logout-perform')
-def logout_perform():
-    try:
-        ts = int(request.args.get('t', 0))
-    except ValueError:
-        ts = 0
-
-    current_time = time.time()
-    if current_time - ts < 5:
-        logout_user()
-        return Response(
-            'Erfolgreich ausgeloggt. <a href="/">Neu einloggen</a>',
-            401,
-            {'WWW-Authenticate': 'Basic realm="Login Required"'}
-        )
-    return redirect(url_for('index'))
+    logout_user()
+    flash('Erfolgreich abgemeldet.', 'info')
+    return redirect(url_for('login'))
 
 
 # --- HAUPT ROUTEN ---
