@@ -27,42 +27,26 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: zoom-in; /* Zeigt an, dass man klicken kann */
         }
 
         .thumb-img {
             width: 100%;
             height: 100%;
-            object-fit: cover;
-            object-position: top center;
-            /* Wichtig: Transition für Zoom muss schnell sein oder aus, sonst "laggt" die Mausbewegung */
-            transition: transform 0.1s ease-out;
-            will-change: transform, transform-origin;
+            object-fit: cover; /* Schneidet Ränder ab, füllt Box */
+            object-position: top center; /* Fokus auf den Titel */
+            transition: transform 0.3s ease, z-index 0s 0.3s; /* Delay z-index reset */
         }
 
-        /* Modal Bild Styles */
-        #previewImage {
-            max-height: 85vh;
-            width: auto;
-            max-width: 100%;
-            object-fit: contain;
-        }
-        .modal-body-preview {
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background-color: #000;
-        }
-        .modal-header-preview {
-            border-bottom: none;
+        /* Der Zoom Effekt */
+        .thumb-container:hover .thumb-img {
+            transform: scale(2.0) translateY(10%); /* Zoom rein */
             position: absolute;
-            right: 0;
-            z-index: 1056;
-            padding: 1rem;
-        }
-        .btn-close-white {
-            filter: invert(1) grayscale(100%) brightness(200%);
+            z-index: 100;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            object-fit: contain; /* Zeige ganzes Bild beim Hover */
+            background-color: white;
+            min-height: 300px;
         }
     </style>
 </head>
@@ -192,9 +176,14 @@
                             </div>
 
                             {% if current_user.is_authenticated and current_user.is_admin %}
-                            <a href="{{ url_for('compress_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-danger w-100" title="Manuell komprimieren">
-                                ⚡ Komprimieren
-                            </a>
+                            <div class="d-flex gap-2">
+                                <a href="{{ url_for('compress_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-warning flex-grow-1" title="Manuell komprimieren">
+                                    ⚡ Komprim.
+                                </a>
+                                <a href="{{ url_for('delete_file_route', filename=file.filename) }}" class="btn btn-sm btn-outline-danger flex-grow-1" title="Endgültig löschen" onclick="return confirm('Wirklich löschen? Das kann nicht rückgängig gemacht werden.')">
+                                    🗑️ Löschen
+                                </a>
+                            </div>
                             {% endif %}
                         </div>
                     </div>
@@ -260,7 +249,7 @@
 
     <!-- Image Preview Modal -->
     <div class="modal fade" id="imageModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-xl"> <!-- Extra Large Modal -->
+        <div class="modal-dialog modal-dialog-centered modal-xl">
             <div class="modal-content bg-dark">
                 <div class="modal-header modal-header-preview">
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -280,19 +269,14 @@
 
             container.addEventListener('mousemove', (e) => {
                 const rect = container.getBoundingClientRect();
-                // Mausposition relativ zum Container in Prozent (0-100)
                 const x = ((e.clientX - rect.left) / rect.width) * 100;
                 const y = ((e.clientY - rect.top) / rect.height) * 100;
-
-                // Setze den Zoom-Fokus auf die Mausposition
                 img.style.transformOrigin = `${x}% ${y}%`;
-                img.style.transform = 'scale(2.5)'; // Zoom-Faktor
+                img.style.transform = 'scale(2.5)';
             });
 
             container.addEventListener('mouseleave', () => {
-                // Reset beim Verlassen
                 img.style.transform = 'scale(1)';
-                // Kurze Verzögerung für origin, damit der Zoom-Out smooth ist
                 setTimeout(() => {
                     img.style.transformOrigin = 'center center';
                 }, 100);
@@ -303,7 +287,6 @@
         function openPreviewModal(imgSrc, title) {
             const modalElement = document.getElementById('imageModal');
             const previewImg = document.getElementById('previewImage');
-
             previewImg.src = imgSrc;
             const modal = new bootstrap.Modal(modalElement);
             modal.show();

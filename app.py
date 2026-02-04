@@ -3,8 +3,10 @@ import threading
 import logging
 import fcntl
 import atexit
+import time
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
-from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request
+from flask import Flask, render_template, send_from_directory, redirect, url_for, flash, request, Response
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
@@ -12,7 +14,6 @@ from dotenv import load_dotenv
 from zeitung import ZeitungScraper, base_dir
 import indexer
 
-# Kompressor Import
 try:
     from compressor import compress_pdf
 except ImportError:
@@ -24,10 +25,28 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev_key')
 
-logging.basicConfig(level=logging.INFO)
+# --- LOGGING SETUP ---
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_file = base_dir / 'system.log'
+
+# Rotating File Handler: Max 1MB, 1 Backup
+file_handler = RotatingFileHandler(log_file, maxBytes=1 * 1024 * 1024, backupCount=1)
+file_handler.setFormatter(log_formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+
+# Gunicorn Logger anbinden
+gunicorn_logger = logging.getLogger('gunicorn.error')
+app.logger.handlers = gunicorn_logger.handlers
+app.logger.setLevel(gunicorn_logger.level)
+if gunicorn_logger.handlers:
+    root_logger.addHandler(gunicorn_logger.handlers[0])
+
 logger = logging.getLogger(__name__)
 
-# --- FLASK LOGIN SETUP ---
+# --- AUTH SYSTEM ---
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -52,7 +71,6 @@ def load_user(user_id):
 process_lock = threading.Lock()
 is_busy = False
 
-# DB Init beim Start
 if not os.path.exists('/app/downloads/zeitung.db'):
     indexer.init_db()
 else:
@@ -86,6 +104,7 @@ def run_archive_background(date_str, range_count):
         for fpath in new_files:
             if fpath.exists():
                 indexer.index_pdf(fpath)
+
     except Exception as e:
         logger.error(f"Archiv Fehler: {e}")
     finally:
@@ -135,7 +154,7 @@ def try_start_process(target_func, *args):
     return False
 
 
-# --- SCHEDULER (MIT LOCK) ---
+# --- SCHEDULER ---
 def job_download():
     logger.info("⏰ 06:00 - Auto-Download gestartet")
     try_start_process(run_scraper_background)
@@ -200,9 +219,31 @@ def login():
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user()
-    flash('Erfolgreich abgemeldet.', 'info')
-    return redirect(url_for('login'))
+    ts = int(time.time())
+    return redirect(url_for('logout_perform', t=ts))
+
+
+@app.route('/logout-perform')
+def logout_perform():
+    # Dieser Zwischenschritt hilft gegen Browser, die Basic Auth Daten zu aggressiv cachen
+    # und den User sofort wieder einloggen wollen.
+    try:
+        ts = int(request.args.get('t', 0))
+    except ValueError:
+        ts = 0
+
+    current_time = time.time()
+
+    # Wenn der Request jünger als 5 Sekunden ist -> Logout erzwingen (401 senden)
+    if current_time - ts < 5:
+        logout_user()
+        return Response(
+            'Erfolgreich ausgeloggt. <a href="/">Neu einloggen</a>',
+            401,
+            {'WWW-Authenticate': 'Basic realm="Login Required"'}
+        )
+
+    return redirect(url_for('index'))
 
 
 # --- HAUPT ROUTEN ---
@@ -287,7 +328,7 @@ def trigger_scrape():
 def reindex():
     if not current_user.is_admin: return redirect(url_for('index'))
     if try_start_process(run_reindex_background):
-        flash('Re-Indexing gestartet.', 'success')
+        flash('Re-Indexing gestartet. Thumbnails werden erstellt...', 'success')
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
@@ -315,6 +356,40 @@ def compress_file_route(filename):
     else:
         flash('System beschäftigt.', 'warning')
     return redirect(url_for('index'))
+
+
+@app.route('/delete/<filename>')
+@login_required
+def delete_file_route(filename):
+    if not current_user.is_admin:
+        flash("Zugriff verweigert.", "danger")
+        return redirect(url_for('index'))
+
+    if indexer.delete_file_data(base_dir, filename):
+        flash(f'Datei {filename} erfolgreich gelöscht.', 'success')
+    else:
+        flash(f'Fehler beim Löschen von {filename}.', 'danger')
+
+    return redirect(url_for('index'))
+
+
+@app.route('/admin/logs')
+@login_required
+def get_logs():
+    if not current_user.is_admin:
+        return "Access Denied", 403
+
+    log_path = base_dir / 'system.log'
+    if not log_path.exists():
+        return "Noch keine Logs vorhanden."
+
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            last_lines = lines[-100:]
+            return "".join(last_lines)
+    except Exception as e:
+        return f"Fehler beim Lesen der Logs: {e}"
 
 
 if __name__ == '__main__':
